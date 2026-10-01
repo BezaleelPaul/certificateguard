@@ -202,3 +202,73 @@ def test_file_upload_validation_security():
     # Mismatched magic bytes (executable disguised as pdf)
     with pytest.raises(FileValidationError):
         validate_file_upload("exploit.pdf", b"MZ\x90\x00\x03\x00\x00\x00", "application/pdf")
+
+
+def test_ssrf_guard_protections():
+    from app.security.ssrf import validate_url_ssrf, is_safe_url
+
+    # AWS/GCP/Azure Cloud Metadata IPs
+    res_metadata = validate_url_ssrf("http://169.254.169.254/latest/meta-data/")
+    assert res_metadata.is_safe is False
+    assert "metadata" in res_metadata.reason.lower() or "rejected" in res_metadata.reason.lower()
+
+    # RFC 1918 Private IPv4
+    assert is_safe_url("http://10.0.0.1/internal-status") is False
+    assert is_safe_url("http://192.168.1.100/router-config") is False
+    assert is_safe_url("http://172.16.50.4/metrics") is False
+
+    # Loopback IP
+    assert is_safe_url("http://127.0.0.1:8000/api/admin") is False
+    assert is_safe_url("http://localhost:3000") is False
+
+    # Non-HTTP/HTTPS protocol schemes
+    assert is_safe_url("file:///etc/passwd") is False
+    assert is_safe_url("gopher://127.0.0.1:70") is False
+    assert is_safe_url("ftp://internal.server/file") is False
+
+
+def test_advanced_name_normalization_variations():
+    # Honorifics
+    res_title = identity_matcher.compare("Dr. Bezaleel Paul", "Bezaleel Paul")
+    assert res_title.match_level == IdentityMatchLevel.EXACT
+    assert res_title.similarity_score == 1.0
+
+    # Inverted name format (LastName, FirstName)
+    res_inverted = identity_matcher.compare("Paul, Bezaleel", "Bezaleel Paul")
+    assert res_inverted.match_level == IdentityMatchLevel.EXACT
+
+    # Academic credentials / suffixes
+    res_suffix = identity_matcher.compare("Bezaleel Paul, Ph.D.", "Bezaleel Paul")
+    assert res_suffix.match_level == IdentityMatchLevel.EXACT
+
+    # Combined title and suffix
+    res_prof = identity_matcher.compare("Prof. Bezaleel Paul, Jr.", "Bezaleel Paul")
+    assert res_prof.match_level == IdentityMatchLevel.EXACT
+
+    # Initials matching
+    res_initial = identity_matcher.compare("B. Paul", "Bezaleel Paul")
+    assert res_initial.match_level == IdentityMatchLevel.HIGH_CONFIDENCE
+    assert res_initial.similarity_score > 0.90
+
+
+def test_pdf_cryptographic_signature_verifier():
+    from app.verification.signatures import pdf_signature_verifier
+
+    # 1. Plain unsigned document
+    unsigned_pdf = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
+    sig_unsigned = pdf_signature_verifier.verify_bytes(unsigned_pdf)
+    assert sig_unsigned.has_signature is False
+    assert sig_unsigned.status == "UNSIGNED"
+
+    # 2. Tampered PDF with appended payload past byte range
+    # Signature specifies range ending at index 100, but file has 500 extra bytes appended
+    base_signed_mock = (
+        b"%PDF-1.4\n1 0 obj\n<< /Type /Sig /ByteRange [0 50 80 20] /Contents <010203> >>\nendobj\n%%EOF"
+    )
+    # Append unauthenticated payload (exploiting incremental update vulnerability)
+    tampered_signed_pdf = base_signed_mock + (b"\n% Malicious appended payload altering student name to Eve\n" * 10)
+    sig_tampered = pdf_signature_verifier.verify_bytes(tampered_signed_pdf)
+    assert sig_tampered.has_signature is True
+    assert sig_tampered.status == "TAMPERED"
+    assert any("unauthenticated bytes" in r.lower() for r in sig_tampered.tamper_reasons)
+

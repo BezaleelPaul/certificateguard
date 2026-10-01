@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from app.models import AnomalySeverity, IssuerVerificationStatus
@@ -41,6 +41,9 @@ class VerificationContext(BaseModel):
     forensic_signal: Optional[str] = None
     forensic_findings: List[str] = []
     synthetic_signal: Optional[str] = None
+    qr_is_ssrf_safe: bool = True
+    qr_ssrf_reason: Optional[str] = None
+    digital_signature_status: Optional[str] = None
     model_config = {"arbitrary_types_allowed": True}
 
 
@@ -391,7 +394,7 @@ class RuleA018DateInconsistency(AnomalyRule):
                 year_match = re.search(r"\b(19\d{2}|20\d{2})\b", ctx.extracted_issue_date)
                 if year_match:
                     year = int(year_match.group(1))
-                    current_year = datetime.utcnow().year
+                    current_year = datetime.now(timezone.utc).year
                     if year > current_year + 1 or year < 1980:
                         return AnomalyItem(
                             rule_code=self.rule_code,
@@ -417,7 +420,7 @@ class RuleA019ExpiryInconsistency(AnomalyRule):
                 year_match = re.search(r"\b(19\d{2}|20\d{2})\b", ctx.extracted_expiry_date)
                 if year_match:
                     year = int(year_match.group(1))
-                    current_year = datetime.utcnow().year
+                    current_year = datetime.now(timezone.utc).year
                     if year < current_year - 5:
                         return AnomalyItem(
                             rule_code=self.rule_code,
@@ -451,6 +454,42 @@ class RuleA020MultipleSimilarSubmissions(AnomalyRule):
         return None
 
 
+# A021: Server-Side Request Forgery (SSRF) Attempt
+class RuleA021SSRFAttempt(AnomalyRule):
+    rule_code = "A021"
+    severity = AnomalySeverity.CRITICAL
+    title = "Server-Side Request Forgery (SSRF) Attempt Detected"
+
+    def evaluate(self, ctx: VerificationContext) -> Optional[AnomalyItem]:
+        if not ctx.qr_is_ssrf_safe:
+            return AnomalyItem(
+                rule_code=self.rule_code,
+                severity=self.severity,
+                title=self.title,
+                description=f"Destination URL in certificate triggers SSRF protection: {ctx.qr_ssrf_reason or 'Forbidden target'}",
+                evidence={"qr_url": ctx.extracted_qr_url, "reason": ctx.qr_ssrf_reason}
+            )
+        return None
+
+
+# A022: Cryptographic Digital Signature Tampered
+class RuleA022DigitalSignatureTampered(AnomalyRule):
+    rule_code = "A022"
+    severity = AnomalySeverity.CRITICAL
+    title = "Cryptographic Digital Signature Tampered"
+
+    def evaluate(self, ctx: VerificationContext) -> Optional[AnomalyItem]:
+        if ctx.digital_signature_status == "TAMPERED":
+            return AnomalyItem(
+                rule_code=self.rule_code,
+                severity=self.severity,
+                title=self.title,
+                description="The cryptographic digital signature on this PDF has been invalidated or unauthenticated bytes were appended after the signed byte range.",
+                evidence={"digital_signature_status": ctx.digital_signature_status}
+            )
+        return None
+
+
 ALL_ANOMALY_RULES: List[AnomalyRule] = [
     RuleA001CertificateIdMissing(),
     RuleA002QRMissing(),
@@ -472,4 +511,6 @@ ALL_ANOMALY_RULES: List[AnomalyRule] = [
     RuleA018DateInconsistency(),
     RuleA019ExpiryInconsistency(),
     RuleA020MultipleSimilarSubmissions(),
+    RuleA021SSRFAttempt(),
+    RuleA022DigitalSignatureTampered(),
 ]

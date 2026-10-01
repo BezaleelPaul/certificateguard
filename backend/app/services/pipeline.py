@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, delete
@@ -20,6 +20,7 @@ from app.verification.playwright_adapter import playwright_issuer_adapter
 from app.verification.identity import identity_matcher, IdentityMatchLevel
 from app.verification.duplicate import duplicate_detector
 from app.verification.forensics import document_forensics
+from app.verification.signatures import pdf_signature_verifier
 from app.verification.synthetic import synthetic_detector
 from app.anomaly.rules import VerificationContext, AnomalyItem
 from app.anomaly.engine import anomaly_engine
@@ -54,7 +55,7 @@ class VerificationPipeline:
         student_name = student.full_name if student else "Unknown Student"
 
         submission.status = SubmissionStatus.PROCESSING.value
-        submission.processing_started_at = datetime.utcnow()
+        submission.processing_started_at = datetime.now(timezone.utc)
         await db.commit()
 
         # Clear any prior processing records for this submission for complete idempotency
@@ -205,7 +206,7 @@ class VerificationPipeline:
                 status_returned=issuer_verif_status,
                 raw_evidence=raw_evidence,
                 verification_status=issuer_verif_status,
-                verified_at=datetime.utcnow()
+                verified_at=datetime.now(timezone.utc)
             )
             db.add(issuer_verif_record)
             await db.flush()
@@ -289,7 +290,8 @@ class VerificationPipeline:
 
         await db.flush()
 
-        # Stage 9: Document Forensics & Synthetic Signal
+        # Stage 9: Cryptographic Digital Signature, Document Forensics & Synthetic Signal
+        sig_info = pdf_signature_verifier.verify_file(file_path, submission.mime_type)
         forensic_check = document_forensics.analyze(file_path, submission.mime_type)
         synthetic_res = await synthetic_detector.analyze(file_path)
 
@@ -308,6 +310,9 @@ class VerificationPipeline:
             extracted_expiry_date=extracted_info.expiry_date,
             extracted_qr_url=extracted_info.qr_url,
             qr_hostname=qr_hostname,
+            qr_is_ssrf_safe=qr_result.is_ssrf_safe,
+            qr_ssrf_reason=qr_result.ssrf_reason,
+            digital_signature_status=sig_info.status,
             issuer_name=matched_issuer.name if matched_issuer else extracted_info.issuer_name,
             issuer_domain=matched_issuer.official_domain if matched_issuer else None,
             issuer_requires_qr=True,
@@ -350,7 +355,8 @@ class VerificationPipeline:
             anomalies=detected_anomalies,
             file_integrity_pass=file_integrity_pass,
             duplicate_detected=bool(duplicate_matches_list),
-            qr_verification_status=qr_status
+            qr_verification_status=qr_status,
+            digital_signature_status=sig_info.status
         )
 
         timeline.append("FINALIZED")
@@ -374,7 +380,7 @@ class VerificationPipeline:
 
         # Update Submission final state
         submission.status = evaluation.final_status.value
-        submission.processing_completed_at = datetime.utcnow()
+        submission.processing_completed_at = datetime.now(timezone.utc)
 
         # Generate and save evidence report
         report_text = report_generator.generate_text_report(
@@ -385,7 +391,8 @@ class VerificationPipeline:
             verification_result=v_result,
             anomalies=saved_anomalies,
             duplicate_matches=[],
-            approved_domain=matched_issuer.official_domain if matched_issuer else None
+            approved_domain=matched_issuer.official_domain if matched_issuer else None,
+            digital_signature_info=sig_info
         )
         await storage_provider.save_report(submission.id, report_text)
 

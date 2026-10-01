@@ -7,10 +7,15 @@ from PIL import Image
 import io
 
 
+from app.security.ssrf import validate_url_ssrf
+
+
 class QRDecodeResult(BaseModel):
     raw_url: Optional[str] = None
     hostname: Optional[str] = None
     is_valid_url: bool = False
+    is_ssrf_safe: bool = True
+    ssrf_reason: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -96,12 +101,14 @@ class QRExtractor:
         try:
             parsed = urlparse(raw_url)
             if parsed.scheme in ["http", "https"] and parsed.netloc:
-                # Remove port from hostname if present
                 hostname = parsed.hostname.lower() if parsed.hostname else ""
+                ssrf_check = validate_url_ssrf(raw_url)
                 return QRDecodeResult(
                     raw_url=raw_url,
                     hostname=hostname,
-                    is_valid_url=True
+                    is_valid_url=True,
+                    is_ssrf_safe=ssrf_check.is_safe,
+                    ssrf_reason=ssrf_check.reason if not ssrf_check.is_safe else None
                 )
             return QRDecodeResult(raw_url=raw_url, is_valid_url=False, error="Invalid URL scheme or format")
         except Exception as e:

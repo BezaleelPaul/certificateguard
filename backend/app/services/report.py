@@ -16,7 +16,8 @@ class EvidenceReportGenerator:
         verification_result: Optional[VerificationResult],
         anomalies: List[Anomaly],
         duplicate_matches: List[DuplicateMatch],
-        approved_domain: Optional[str] = None
+        approved_domain: Optional[str] = None,
+        digital_signature_info: Optional[Any] = None
     ) -> str:
         cert_name = (extracted.course_name if extracted else None) or "Certificate Document"
         issuer_name = (extracted.issuer_name if extracted else None) or (issuer_verif.issuer.name if issuer_verif and issuer_verif.issuer else "Unknown Issuer")
@@ -33,6 +34,11 @@ class EvidenceReportGenerator:
             f"Submission ID:       {submission.id}",
             f"Timestamp:           {submission.uploaded_at}",
             "------------------------------------------------------------",
+            "CRYPTOGRAPHIC DIGITAL SIGNATURE (Rank #1 Trust Authority)",
+            f"Status:              {digital_signature_info.status if digital_signature_info else 'UNSIGNED'}",
+            f"Signer:              {(digital_signature_info.signer_name if digital_signature_info else None) or 'None'}",
+            f"Summary:             {digital_signature_info.summary if digital_signature_info else 'No digital signature present'}",
+            "",
             "FILE INTEGRITY",
             f"SHA-256:             {submission.sha256}",
             f"File Size:           {submission.file_size} bytes",

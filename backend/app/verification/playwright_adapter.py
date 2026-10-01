@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any
 from app.verification.adapter import IssuerVerificationAdapter, AdapterVerificationResult
 from app.models import IssuerVerificationStatus
 from app.config import settings
+from app.security.ssrf import validate_url_ssrf
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,7 +14,7 @@ class PlaywrightIssuerAdapter(IssuerVerificationAdapter):
     """
     Playwright-based web verification adapter for issuers that have public verification portals
     without dedicated JSON APIs.
-    Enforces strict timeout, sandboxed execution, domain confinement, and graceful failure.
+    Enforces strict timeout, sandboxed execution, domain confinement, SSRF protection, and graceful failure.
     """
 
     def __init__(self, timeout_ms: Optional[int] = None):
@@ -32,6 +33,25 @@ class PlaywrightIssuerAdapter(IssuerVerificationAdapter):
             )
 
         config = metadata or {}
+
+        # Enforce SSRF protection
+        allow_local = config.get("allow_localhost", False)
+        ssrf_check = validate_url_ssrf(verification_url, allow_localhost=allow_local)
+        if not ssrf_check.is_safe:
+            if ssrf_check.is_dns_failure:
+                logger.info(f"Target verification URL host unresolvable: {ssrf_check.reason}")
+                return AdapterVerificationResult(
+                    verification_status=IssuerVerificationStatus.UNAVAILABLE,
+                    verification_url=verification_url,
+                    error_message=f"Issuer website unresolvable: {ssrf_check.reason}"
+                )
+            logger.warning(f"SSRF attack blocked for URL '{verification_url}': {ssrf_check.reason}")
+            return AdapterVerificationResult(
+                verification_status=IssuerVerificationStatus.INVALID,
+                verification_url=verification_url,
+                error_message=f"SSRF violation: {ssrf_check.reason}"
+            )
+
         status_selector = config.get("status_selector", "#cert-status, .status, [data-status]")
         recipient_selector = config.get("recipient_selector", "#cert-recipient, .recipient, [data-recipient]")
         course_selector = config.get("course_selector", "#cert-course, .course, [data-course]")

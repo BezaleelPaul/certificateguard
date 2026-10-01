@@ -266,3 +266,115 @@ async def test_attack_16_client_submits_fake_verification_result(student_auth_he
         # After processing, invalid ID (CERT-1003) must be FAILED, never VERIFIED
         p_resp = await client.post(f"/api/submissions/{sub_id}/process", headers=student_auth_headers)
         assert p_resp.json()["status"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_attack_17_ssrf_attempt_to_cloud_metadata():
+    """Attack 17 — SSRF attempt to AWS/cloud metadata IP (169.254.169.254) -> BLOCKED & ANOMALY."""
+    from app.security.ssrf import validate_url_ssrf
+    from app.verification.playwright_adapter import PlaywrightIssuerAdapter
+    from app.models import IssuerVerificationStatus, AnomalySeverity
+    from app.anomaly.rules import VerificationContext, RuleA021SSRFAttempt
+
+    # 1. URL security validator detects cloud metadata IP
+    ssrf_check = validate_url_ssrf("http://169.254.169.254/latest/meta-data/")
+    assert ssrf_check.is_safe is False
+    assert "rejected" in ssrf_check.reason.lower() or "metadata" in ssrf_check.reason.lower()
+
+    # 2. Playwright adapter refuses navigation to metadata IP
+    adapter = PlaywrightIssuerAdapter()
+    result = await adapter.verify(
+        certificate_id="CERT-SSRF-01",
+        verification_url="http://169.254.169.254/latest/meta-data/"
+    )
+    assert result.verification_status == IssuerVerificationStatus.INVALID
+    assert "SSRF violation" in result.error_message
+
+    # 3. Anomaly Rule A021 flags CRITICAL anomaly
+    ctx = VerificationContext(
+        submission_id="sub-ssrf",
+        student_id="stu-1",
+        student_name="Attacker",
+        file_sha256="abc12345",
+        extracted_qr_url="http://169.254.169.254/latest/meta-data/",
+        qr_is_ssrf_safe=False,
+        qr_ssrf_reason=ssrf_check.reason
+    )
+    anom = RuleA021SSRFAttempt().evaluate(ctx)
+    assert anom is not None
+    assert anom.rule_code == "A021"
+    assert anom.severity == AnomalySeverity.CRITICAL
+
+
+@pytest.mark.asyncio
+async def test_attack_18_ssrf_attempt_to_internal_rfc1918_network():
+    """Attack 18 — SSRF attempt to RFC 1918 internal subnets -> BLOCKED."""
+    from app.security.ssrf import validate_url_ssrf
+    from app.verification.playwright_adapter import PlaywrightIssuerAdapter
+    from app.models import IssuerVerificationStatus
+
+    for private_target in ["http://192.168.1.1/admin", "http://10.0.0.1:8080/secrets", "http://172.16.0.1/status"]:
+        check = validate_url_ssrf(private_target)
+        assert check.is_safe is False
+
+        adapter = PlaywrightIssuerAdapter()
+        res = await adapter.verify(certificate_id="CERT-SSRF-02", verification_url=private_target)
+        assert res.verification_status == IssuerVerificationStatus.INVALID
+        assert "SSRF violation" in res.error_message
+
+
+@pytest.mark.asyncio
+async def test_attack_19_pdf_digital_signature_tampering():
+    """Attack 19 — PDF digital signature byte range tampered -> TAMPERED & CRITICAL ANOMALY."""
+    from app.verification.signatures import pdf_signature_verifier
+    from app.models import AnomalySeverity
+    from app.anomaly.rules import VerificationContext, RuleA022DigitalSignatureTampered
+
+    # Fake signed PDF with trailing unauthenticated modifications
+    pdf_with_tampered_bytes = (
+        b"%PDF-1.4\n1 0 obj\n<< /Type /Sig /ByteRange [0 60 90 30] /Contents <01020304> >>\nendobj\n%%EOF\n"
+        b"% INJECTED MALICIOUS INCREMENTAL UPDATE WITH FORGED RECIPIENT NAME\n" * 15
+    )
+    sig_result = pdf_signature_verifier.verify_bytes(pdf_with_tampered_bytes)
+    assert sig_result.has_signature is True
+    assert sig_result.status == "TAMPERED"
+
+    # Evaluated by Rule A022
+    ctx = VerificationContext(
+        submission_id="sub-sig",
+        student_id="stu-1",
+        student_name="Attacker",
+        file_sha256="12345678",
+        digital_signature_status=sig_result.status
+    )
+    anom = RuleA022DigitalSignatureTampered().evaluate(ctx)
+    assert anom is not None
+    assert anom.rule_code == "A022"
+    assert anom.severity == AnomalySeverity.CRITICAL
+
+
+@pytest.mark.asyncio
+async def test_attack_20_identity_name_variations_and_honorifics():
+    """Attack 20 — Advanced name variations (Doctor, Professor, initials, inverted) resolve accurately."""
+    from app.verification.identity import identity_matcher, IdentityMatchLevel
+
+    # 1. Title/honorific stripping
+    res1 = identity_matcher.compare("Dr. Bezaleel Paul", "Bezaleel Paul")
+    assert res1.match_level == IdentityMatchLevel.EXACT
+
+    # 2. Inverted name formatting
+    res2 = identity_matcher.compare("Paul, Bezaleel", "Bezaleel Paul")
+    assert res2.match_level == IdentityMatchLevel.EXACT
+
+    # 3. Suffixes
+    res3 = identity_matcher.compare("Bezaleel Paul, Ph.D.", "Bezaleel Paul")
+    assert res3.match_level == IdentityMatchLevel.EXACT
+
+    # 4. Initials
+    res4 = identity_matcher.compare("B. Paul", "Bezaleel Paul")
+    assert res4.match_level == IdentityMatchLevel.HIGH_CONFIDENCE
+
+    # 5. Clear adversary impersonation attempt
+    res5 = identity_matcher.compare("Bezaleel Paul", "Prof. Alexander Graham")
+    assert res5.match_level == IdentityMatchLevel.MISMATCH
+

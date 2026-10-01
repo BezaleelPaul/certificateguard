@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from app.models import SubmissionStatus, AnomalySeverity, IssuerVerificationStatus
 from app.anomaly.rules import AnomalyItem
 
@@ -30,7 +30,8 @@ class VerificationRuleEngine:
         anomalies: List[AnomalyItem],
         file_integrity_pass: bool,
         duplicate_detected: bool,
-        qr_verification_status: str
+        qr_verification_status: str,
+        digital_signature_status: Optional[str] = None
     ) -> FinalStatusEvaluation:
         reasons: List[str] = []
         has_critical = any(a.severity == AnomalySeverity.CRITICAL for a in anomalies)
@@ -111,23 +112,26 @@ class VerificationRuleEngine:
                 reasons=reasons
             )
 
-        # 8. All Checks Pass: Trusted issuer VALID + Recipient Matches + Integrity Pass + No Critical/High Anomalies
+        # 8. All Checks Pass: Trusted issuer VALID or Valid Digital Signature + Recipient Matches + Integrity Pass + No Critical/High Anomalies
         if (
-            issuer_verification_status == IssuerVerificationStatus.VALID.value
+            (issuer_verification_status == IssuerVerificationStatus.VALID.value or digital_signature_status == "VALID")
             and identity_match_level in ["EXACT", "HIGH_CONFIDENCE"]
             and not has_critical
             and not has_high
             and file_integrity_pass
         ):
-            summary = "Certificate successfully verified against official issuer records with matching recipient identity."
-            reasons.append("Issuer confirmed certificate authenticity.")
+            summary = "Certificate successfully verified against official records with matching recipient identity."
+            if digital_signature_status == "VALID":
+                reasons.append("Document carries a valid cryptographic digital signature (Rank #1 Trust Authority).")
+            if issuer_verification_status == IssuerVerificationStatus.VALID.value:
+                reasons.append("Issuer confirmed certificate authenticity.")
             reasons.append("Recipient identity matches student records.")
             reasons.append("Document integrity and cryptographic hash validated.")
             if has_medium:
                 reasons.append("Minor non-critical warnings noted.")
             return FinalStatusEvaluation(
                 final_status=SubmissionStatus.VERIFIED,
-                confidence=0.98,
+                confidence=0.99 if digital_signature_status == "VALID" else 0.98,
                 reason_summary=summary,
                 reasons=reasons
             )
