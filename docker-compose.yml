@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: certificateguard_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: certguard
+      POSTGRES_PASSWORD: certguard_secret
+      POSTGRES_DB: certificateguard
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U certguard -d certificateguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mock-issuer:
+    build:
+      context: .
+      dockerfile: mock-issuer/Dockerfile
+    container_name: certificateguard_mock_issuer
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: 8001
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: certificateguard_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-issuer:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://certguard:certguard_secret@postgres:5432/certificateguard
+      SECRET_KEY: dev_secret_key_certificate_guard_super_secure_32_bytes_min_12345
+      ENVIRONMENT: production
+      STORAGE_PATH: /app/storage
+      MOCK_ISSUER_URL: http://mock-issuer:8001
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    volumes:
+      - backend_storage:/app/storage
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: certificateguard_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+
+volumes:
+  postgres_data:
+  backend_storage:
