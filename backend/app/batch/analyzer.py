@@ -41,8 +41,14 @@ from app.verification.identity import identity_matcher
 from app.verification.mock_adapter import mock_issuer_adapter
 from app.verification.playwright_adapter import playwright_issuer_adapter
 from app.verification.rule_engine import verification_rule_engine
+from app.verification.web_fetch_adapter import web_fetch_issuer_adapter
 
 logger = logging.getLogger(__name__)
+
+# Demo issuers resolve through the authoritative mock registry. Real issuers
+# must NEVER fall through to it: the registry does not know their certificate
+# IDs and would report every genuine certificate as invalid.
+MOCK_REGISTRY_DOMAINS = frozenset({"example.edu", "coursera.org", "edx.org"})
 
 STATUS_TO_VERDICT = {
     "VERIFIED": VERDICT_LEGIT,
@@ -99,6 +105,21 @@ def _match_issuer(
     return None
 
 
+def _issuer_config(issuer: Issuer) -> Dict[str, Any]:
+    try:
+        cfg = json.loads(issuer.configuration_json or "{}")
+        return cfg if isinstance(cfg, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _uses_mock_registry(issuer: Issuer, config: Dict[str, Any]) -> bool:
+    """Demo issuers resolve through the mock registry; real issuers never do."""
+    if "use_mock_registry" in config:
+        return bool(config["use_mock_registry"])
+    return issuer.official_domain in MOCK_REGISTRY_DOMAINS
+
+
 async def _resolve_issuer_record(
     matched_issuer: Optional[Issuer],
     certificate_id: str,
@@ -112,32 +133,52 @@ async def _resolve_issuer_record(
         "course": None,
         "evidence": None,
         "method": "NONE",
+        "note": None,
     }
     if not matched_issuer or not certificate_id:
         return result
 
     result["method"] = matched_issuer.verification_type
     url = (certificate_url or "").strip() or None
+    config = _issuer_config(matched_issuer)
 
     if matched_issuer.verification_type == "WEB":
-        target_url = url
-        if not target_url and matched_issuer.verification_url:
-            target_url = f"{matched_issuer.verification_url}?id={certificate_id}"
-        playwright_res = await playwright_issuer_adapter.verify(
-            certificate_id=certificate_id,
-            verification_url=target_url,
-            metadata=json.loads(matched_issuer.configuration_json or "{}"),
-        )
-        if playwright_res.verification_status.value != "UNAVAILABLE":
+        if _uses_mock_registry(matched_issuer, config):
+            target_url = url
+            if not target_url and matched_issuer.verification_url:
+                target_url = f"{matched_issuer.verification_url}?id={certificate_id}"
+            playwright_res = await playwright_issuer_adapter.verify(
+                certificate_id=certificate_id,
+                verification_url=target_url,
+                metadata=config,
+            )
+            if playwright_res.verification_status.value != "UNAVAILABLE":
+                return {
+                    "status": playwright_res.verification_status.value,
+                    "certificate_id": playwright_res.certificate_id_returned,
+                    "recipient": playwright_res.recipient_returned,
+                    "course": playwright_res.course_returned,
+                    "evidence": playwright_res.raw_evidence,
+                    "method": "WEB",
+                    "note": playwright_res.error_message,
+                }
+            # Playwright unavailable -> fall back to the authoritative mock resolver.
+        else:
+            # Real issuer: consult its public verification page over HTTP.
+            web_res = await web_fetch_issuer_adapter.verify(
+                certificate_id=certificate_id,
+                verification_url=url,
+                metadata=config,
+            )
             return {
-                "status": playwright_res.verification_status.value,
-                "certificate_id": playwright_res.certificate_id_returned,
-                "recipient": playwright_res.recipient_returned,
-                "course": playwright_res.course_returned,
-                "evidence": playwright_res.raw_evidence,
+                "status": web_res.verification_status.value,
+                "certificate_id": web_res.certificate_id_returned,
+                "recipient": web_res.recipient_returned,
+                "course": web_res.course_returned,
+                "evidence": web_res.raw_evidence,
                 "method": "WEB",
+                "note": web_res.error_message,
             }
-        # Playwright unavailable -> fall back to the authoritative mock resolver.
 
     mock_res = await mock_issuer_adapter.verify(
         certificate_id=certificate_id,
@@ -150,6 +191,7 @@ async def _resolve_issuer_record(
         "course": mock_res.course_returned,
         "evidence": mock_res.raw_evidence,
         "method": "MOCK" if matched_issuer.verification_type != "WEB" else "WEB->MOCK",
+        "note": mock_res.error_message,
     }
 
 
@@ -308,6 +350,9 @@ async def analyze_rows(
         analysis = evaluation.reason_summary
         if anomaly_summary:
             analysis = f"{analysis} | Findings: {anomaly_summary}"
+        issuer_note = issuer_record.get("note")
+        if issuer_note:
+            analysis = f"{analysis} | Issuer check: {issuer_note}"
 
         verdicts.append(
             RowVerdict(

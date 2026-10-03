@@ -12,7 +12,9 @@ async def seed_data():
 
     async with AsyncSessionLocal() as session:
         # Check if users already seeded
-        res = await session.execute(select(User).where(User.email == "student@example.com"))
+        res = await session.execute(
+            select(User).where(User.email == "student@example.com")
+        )
         if res.scalar_one_or_none():
             print("Database already contains seed users.")
             return
@@ -25,7 +27,7 @@ async def seed_data():
             full_name="Bezaleel Paul",
             email="student@example.com",
             department="Computer Science & Engineering",
-            section="A"
+            section="A",
         )
         session.add(student_profile)
         await session.flush()
@@ -35,7 +37,7 @@ async def seed_data():
             full_name="Rahul Kumar",
             email="rahul.k@example.com",
             department="Information Security",
-            section="B"
+            section="B",
         )
         session.add(student_profile_2)
         await session.flush()
@@ -48,7 +50,7 @@ async def seed_data():
             email="student@example.com",
             hashed_password=hashed_pw,
             role=UserRole.STUDENT.value,
-            student_id=student_profile.id
+            student_id=student_profile.id,
         )
         session.add(user_student)
 
@@ -56,7 +58,7 @@ async def seed_data():
             name="Dr. Alan Turing",
             email="teacher@example.com",
             hashed_password=hashed_pw,
-            role=UserRole.TEACHER.value
+            role=UserRole.TEACHER.value,
         )
         session.add(user_teacher)
 
@@ -64,7 +66,7 @@ async def seed_data():
             name="System Administrator",
             email="admin@example.com",
             hashed_password=hashed_pw,
-            role=UserRole.ADMIN.value
+            role=UserRole.ADMIN.value,
         )
         session.add(user_admin)
 
@@ -75,7 +77,7 @@ async def seed_data():
             verification_type=IssuerVerificationType.WEB.value,
             verification_url="http://localhost:8001/verify",
             active=True,
-            configuration_json='{"status_selector": "#cert-status", "recipient_selector": "#cert-recipient", "course_selector": "#cert-course", "cert_id_selector": "#cert-id"}'
+            configuration_json='{"status_selector": "#cert-status", "recipient_selector": "#cert-recipient", "course_selector": "#cert-course", "cert_id_selector": "#cert-id"}',
         )
         session.add(issuer_1)
 
@@ -85,7 +87,7 @@ async def seed_data():
             verification_type=IssuerVerificationType.WEB.value,
             verification_url="https://coursera.org/verify",
             active=True,
-            configuration_json='{"status_selector": ".verification-status"}'
+            configuration_json='{"status_selector": ".verification-status"}',
         )
         session.add(issuer_2)
 
@@ -94,9 +96,34 @@ async def seed_data():
             official_domain="edx.org",
             verification_type=IssuerVerificationType.WEB.value,
             verification_url="https://courses.edx.org/certificates",
-            active=True
+            active=True,
         )
         session.add(issuer_3)
+
+        # Real issuers verified by fetching their public certificate pages.
+        issuer_4 = Issuer(
+            name="MyGreatLearning",
+            official_domain="mygreatlearning.com",
+            verification_type=IssuerVerificationType.WEB.value,
+            active=True,
+        )
+        session.add(issuer_4)
+
+        issuer_5 = Issuer(
+            name="Simplilearn SkillUp",
+            official_domain="app.link",
+            verification_type=IssuerVerificationType.WEB.value,
+            active=True,
+        )
+        session.add(issuer_5)
+
+        issuer_6 = Issuer(
+            name="Simplilearn",
+            official_domain="simplilearn.com",
+            verification_type=IssuerVerificationType.WEB.value,
+            active=True,
+        )
+        session.add(issuer_6)
 
         await session.commit()
         print("Successfully seeded development data:")

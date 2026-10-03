@@ -3,7 +3,6 @@ from typing import List
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     HTTPException,
@@ -14,7 +13,6 @@ from fastapi.responses import Response
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import database as app_db
 from app.batch.google_sheets import (
     GoogleSheetError,
     adapt_workbook,
@@ -44,14 +42,6 @@ router = APIRouter(prefix="/api/batch", tags=["Batch Analysis"])
 WORKBOOK_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
-
-
-async def run_batch_background(batch_id: str):
-    async with app_db.AsyncSessionLocal() as session:
-        try:
-            await batch_analysis_service.process_batch(batch_id, session)
-        except Exception as e:
-            print(f"Background batch processing failed for {batch_id}: {e}")
 
 
 def _to_response(batch: BatchAnalysis) -> BatchAnalysisResponse:
@@ -100,13 +90,16 @@ def _format_error(exc: WorkbookFormatError) -> HTTPException:
 
 
 async def _ingest_workbook(
-    background_tasks: BackgroundTasks,
     db: AsyncSession,
     current_user: User,
     content: bytes,
     filename: str,
 ) -> BatchAnalysisResponse:
-    """Shared upload path: security checks, contract parse, persist, queue."""
+    """Shared upload path: security checks, contract parse, persist.
+
+    Analysis is triggered explicitly via POST /{batch_id}/process so a row
+    is never fetched/analysed twice concurrently.
+    """
     try:
         validate_workbook_upload(filename, content, WORKBOOK_MEDIA_TYPE)
     except FileValidationError as ve:
@@ -140,8 +133,6 @@ async def _ingest_workbook(
     db.add(batch)
     await db.commit()
     await db.refresh(batch)
-
-    background_tasks.add_task(run_batch_background, batch.id)
     return _to_response(batch)
 
 
@@ -163,7 +154,6 @@ async def download_template(current_user: User = Depends(get_current_user)):
 
 @router.post("", response_model=BatchAnalysisResponse)
 async def upload_batch(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -171,11 +161,10 @@ async def upload_batch(
     """
     Uploads a batch workbook that strictly follows the format contract:
     worksheet 'Certificates', exact header row, empty output/analysis zone.
-    Queues row-level analysis and returns the batch record.
+    Returns the batch record; row analysis runs via POST /{batch_id}/process.
     """
     content = await file.read()
     return await _ingest_workbook(
-        background_tasks,
         db,
         current_user,
         content,
@@ -185,7 +174,6 @@ async def upload_batch(
 
 @router.post("/from-url", response_model=BatchAnalysisResponse)
 async def upload_batch_from_url(
-    background_tasks: BackgroundTasks,
     payload: BatchFromUrlRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -212,7 +200,6 @@ async def upload_batch_from_url(
         raise _format_error(exc)
 
     return await _ingest_workbook(
-        background_tasks,
         db,
         current_user,
         content,
