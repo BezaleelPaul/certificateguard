@@ -202,6 +202,39 @@ docker compose up --build
 
 ---
 
+## Cloud Deployment (Vercel + Render)
+
+The platform is split across two free tiers: the **Next.js frontend on Vercel** and the **FastAPI backend + mock issuer on Render** (Docker, defined in `render.yaml`).
+
+### 1. Backend on Render (~2 minutes)
+
+1. Push this repository to GitHub.
+2. Render Dashboard → **New + → Blueprint** → select the repository.
+3. Render detects `render.yaml` and creates:
+   - `certificateguard-backend` (FastAPI, health check `/health`)
+   - `certificateguard-mock-issuer` (verification portal)
+4. Optional persistence: create a free Neon/Supabase Postgres and set `DATABASE_URL` on the backend service (`postgresql+asyncpg://...`). Left unset, the service uses ephemeral SQLite — fine for demos, resets on restart.
+5. Note the backend URL: `https://certificateguard-backend.onrender.com`
+
+### 2. Frontend on Vercel (~1 minute)
+
+```bash
+cd frontend
+npx vercel link
+npx vercel env add NEXT_PUBLIC_API_URL production   # https://certificateguard-backend.onrender.com
+npx vercel deploy --prod
+```
+
+Or connect the repository in the Vercel dashboard with the same environment variable.
+
+### 3. Point backend at the frontend
+
+Set `CORS_ORIGINS` on the Render backend service to the Vercel URL and redeploy.
+
+> **Free-tier notes**: Render free instances spin down after inactivity (first request takes ~30s), uploads are stored on ephemeral disk (reset on instance restart), and Playwright browser automation is not installed in the container — the backend then falls back to the authoritative mock resolver, which is the designed graceful-degradation path.
+
+---
+
 ## Known Limitations & Security Considerations
 
 1. **Optical Character Recognition (OCR)**: In offline/zero-dependency environments, native PDF text stream extraction is used. For scanned bitmap images, installing system `tesseract-ocr` enhances recognition accuracy.

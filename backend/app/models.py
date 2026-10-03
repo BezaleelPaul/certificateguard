@@ -1,4 +1,15 @@
-from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, Text, ForeignKey, Enum as SQLEnum, Index
+from sqlalchemy import (
+    Column,
+    String,
+    Integer,
+    Float,
+    Boolean,
+    DateTime,
+    Text,
+    ForeignKey,
+    Enum as SQLEnum,
+    Index,
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -60,6 +71,12 @@ class TeacherReviewDecision(str, enum.Enum):
     REQUEST_EVIDENCE = "REQUEST_EVIDENCE"
 
 
+class BatchStatus(str, enum.Enum):
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -68,11 +85,19 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default=UserRole.STUDENT.value)
-    student_id = Column(String(36), ForeignKey("students.id", use_alter=True, name="fk_user_student"), nullable=True)
+    student_id = Column(
+        String(36),
+        ForeignKey("students.id", use_alter=True, name="fk_user_student"),
+        nullable=True,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
-    student_profile = relationship("Student", foreign_keys=[student_id], back_populates="user_account")
+    student_profile = relationship(
+        "Student", foreign_keys=[student_id], back_populates="user_account"
+    )
     reviews = relationship("TeacherReview", back_populates="teacher")
     audit_logs = relationship("AuditLog", back_populates="actor")
 
@@ -88,17 +113,25 @@ class Student(Base):
     department = Column(String(100), nullable=False, default="Computer Science")
     section = Column(String(50), nullable=False, default="A")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
-    user_account = relationship("User", foreign_keys=[User.student_id], back_populates="student_profile")
-    submissions = relationship("Submission", back_populates="student", cascade="all, delete-orphan")
+    user_account = relationship(
+        "User", foreign_keys=[User.student_id], back_populates="student_profile"
+    )
+    submissions = relationship(
+        "Submission", back_populates="student", cascade="all, delete-orphan"
+    )
 
 
 class Submission(Base):
     __tablename__ = "submissions"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    student_id = Column(String(36), ForeignKey("students.id"), nullable=False, index=True)
+    student_id = Column(
+        String(36), ForeignKey("students.id"), nullable=False, index=True
+    )
     original_filename = Column(String(255), nullable=False)
     stored_filename = Column(String(255), nullable=False)
     storage_key = Column(String(255), nullable=False)
@@ -106,26 +139,60 @@ class Submission(Base):
     file_size = Column(Integer, nullable=False)
     sha256 = Column(String(64), nullable=False, index=True)
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
-    status = Column(String(50), nullable=False, default=SubmissionStatus.PROCESSING.value, index=True)
+    status = Column(
+        String(50),
+        nullable=False,
+        default=SubmissionStatus.PROCESSING.value,
+        index=True,
+    )
     processing_started_at = Column(DateTime(timezone=True), nullable=True)
     processing_completed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     student = relationship("Student", back_populates="submissions")
-    extracted_data = relationship("ExtractedCertificateData", back_populates="submission", uselist=False, cascade="all, delete-orphan")
-    issuer_verifications = relationship("IssuerVerification", back_populates="submission", cascade="all, delete-orphan")
-    anomalies = relationship("Anomaly", back_populates="submission", cascade="all, delete-orphan")
-    duplicate_matches = relationship("DuplicateMatch", foreign_keys="DuplicateMatch.submission_id", back_populates="submission", cascade="all, delete-orphan")
-    verification_result = relationship("VerificationResult", back_populates="submission", uselist=False, cascade="all, delete-orphan")
-    reviews = relationship("TeacherReview", back_populates="submission", cascade="all, delete-orphan")
+    extracted_data = relationship(
+        "ExtractedCertificateData",
+        back_populates="submission",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    issuer_verifications = relationship(
+        "IssuerVerification", back_populates="submission", cascade="all, delete-orphan"
+    )
+    anomalies = relationship(
+        "Anomaly", back_populates="submission", cascade="all, delete-orphan"
+    )
+    duplicate_matches = relationship(
+        "DuplicateMatch",
+        foreign_keys="DuplicateMatch.submission_id",
+        back_populates="submission",
+        cascade="all, delete-orphan",
+    )
+    verification_result = relationship(
+        "VerificationResult",
+        back_populates="submission",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    reviews = relationship(
+        "TeacherReview", back_populates="submission", cascade="all, delete-orphan"
+    )
 
 
 class ExtractedCertificateData(Base):
     __tablename__ = "extracted_certificate_data"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    submission_id = Column(String(36), ForeignKey("submissions.id"), nullable=False, unique=True, index=True)
+    submission_id = Column(
+        String(36),
+        ForeignKey("submissions.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
     recipient_name = Column(String(255), nullable=True)
     issuer_name = Column(String(255), nullable=True)
     certificate_id = Column(String(255), nullable=True, index=True)
@@ -146,12 +213,18 @@ class Issuer(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     name = Column(String(255), nullable=False)
     official_domain = Column(String(255), unique=True, index=True, nullable=False)
-    verification_type = Column(String(50), nullable=False, default=IssuerVerificationType.WEB.value)
+    verification_type = Column(
+        String(50), nullable=False, default=IssuerVerificationType.WEB.value
+    )
     verification_url = Column(Text, nullable=True)
     active = Column(Boolean, nullable=False, default=True)
-    configuration_json = Column(Text, nullable=True)  # JSON config e.g. selectors, headers, API keys
+    configuration_json = Column(
+        Text, nullable=True
+    )  # JSON config e.g. selectors, headers, API keys
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     verifications = relationship("IssuerVerification", back_populates="issuer")
 
@@ -160,7 +233,9 @@ class IssuerVerification(Base):
     __tablename__ = "issuer_verifications"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    submission_id = Column(String(36), ForeignKey("submissions.id"), nullable=False, index=True)
+    submission_id = Column(
+        String(36), ForeignKey("submissions.id"), nullable=False, index=True
+    )
     issuer_id = Column(String(36), ForeignKey("issuers.id"), nullable=True)
     verification_method = Column(String(50), nullable=False)  # API, WEB, MOCK, MANUAL
     verification_url = Column(Text, nullable=True)
@@ -170,7 +245,9 @@ class IssuerVerification(Base):
     course_returned = Column(String(255), nullable=True)
     status_returned = Column(String(100), nullable=True)
     raw_evidence = Column(Text, nullable=True)  # JSON or text capture of evidence
-    verification_status = Column(String(50), nullable=False, default=IssuerVerificationStatus.UNAVAILABLE.value)
+    verification_status = Column(
+        String(50), nullable=False, default=IssuerVerificationStatus.UNAVAILABLE.value
+    )
     verified_at = Column(DateTime(timezone=True), server_default=func.now())
     error_message = Column(Text, nullable=True)
 
@@ -182,7 +259,9 @@ class Anomaly(Base):
     __tablename__ = "anomalies"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    submission_id = Column(String(36), ForeignKey("submissions.id"), nullable=False, index=True)
+    submission_id = Column(
+        String(36), ForeignKey("submissions.id"), nullable=False, index=True
+    )
     type = Column(String(50), nullable=False)  # A001, A002, etc.
     severity = Column(String(50), nullable=False)  # LOW, MEDIUM, HIGH, CRITICAL
     title = Column(String(255), nullable=False)
@@ -198,38 +277,60 @@ class DuplicateMatch(Base):
     __tablename__ = "duplicate_matches"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    submission_id = Column(String(36), ForeignKey("submissions.id"), nullable=False, index=True)
-    matched_submission_id = Column(String(36), ForeignKey("submissions.id"), nullable=False, index=True)
-    match_type = Column(String(50), nullable=False)  # EXACT_HASH, PERCEPTUAL_SIMILARITY, CERTIFICATE_ID, OCR_SIMILARITY
+    submission_id = Column(
+        String(36), ForeignKey("submissions.id"), nullable=False, index=True
+    )
+    matched_submission_id = Column(
+        String(36), ForeignKey("submissions.id"), nullable=False, index=True
+    )
+    match_type = Column(
+        String(50), nullable=False
+    )  # EXACT_HASH, PERCEPTUAL_SIMILARITY, CERTIFICATE_ID, OCR_SIMILARITY
     similarity = Column(Float, nullable=False, default=1.0)
     evidence = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    submission = relationship("Submission", foreign_keys=[submission_id], back_populates="duplicate_matches")
-    matched_submission = relationship("Submission", foreign_keys=[matched_submission_id])
+    submission = relationship(
+        "Submission", foreign_keys=[submission_id], back_populates="duplicate_matches"
+    )
+    matched_submission = relationship(
+        "Submission", foreign_keys=[matched_submission_id]
+    )
 
 
 class VerificationResult(Base):
     __tablename__ = "verification_results"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    submission_id = Column(String(36), ForeignKey("submissions.id"), nullable=False, unique=True, index=True)
+    submission_id = Column(
+        String(36),
+        ForeignKey("submissions.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
 
     issuer_verification = Column(String(50), nullable=False, default="NOT_PERFORMED")
     identity_verification = Column(String(50), nullable=False, default="NOT_PERFORMED")
     qr_verification = Column(String(50), nullable=False, default="NOT_PERFORMED")
-    certificate_id_verification = Column(String(50), nullable=False, default="NOT_PERFORMED")
+    certificate_id_verification = Column(
+        String(50), nullable=False, default="NOT_PERFORMED"
+    )
     document_integrity = Column(String(50), nullable=False, default="NOT_PERFORMED")
     duplicate_check = Column(String(50), nullable=False, default="NOT_PERFORMED")
     anomaly_check = Column(String(50), nullable=False, default="NOT_PERFORMED")
     synthetic_media_signal = Column(String(50), nullable=False, default="INCONCLUSIVE")
 
-    final_status = Column(String(50), nullable=False, default=SubmissionStatus.PROCESSING.value)
+    final_status = Column(
+        String(50), nullable=False, default=SubmissionStatus.PROCESSING.value
+    )
     confidence = Column(Float, nullable=False, default=0.0)
     reason_summary = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     submission = relationship("Submission", back_populates="verification_result")
 
@@ -238,7 +339,9 @@ class TeacherReview(Base):
     __tablename__ = "teacher_reviews"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    submission_id = Column(String(36), ForeignKey("submissions.id"), nullable=False, index=True)
+    submission_id = Column(
+        String(36), ForeignKey("submissions.id"), nullable=False, index=True
+    )
     teacher_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     decision = Column(String(50), nullable=False)  # APPROVE, REJECT, REQUEST_EVIDENCE
     reason = Column(Text, nullable=True)
@@ -253,7 +356,9 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    actor_user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+    actor_user_id = Column(
+        String(36), ForeignKey("users.id"), nullable=True, index=True
+    )
     action = Column(String(100), nullable=False)
     entity_type = Column(String(100), nullable=False)
     entity_id = Column(String(36), nullable=False, index=True)
@@ -263,3 +368,40 @@ class AuditLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     actor = relationship("User", back_populates="audit_logs")
+
+
+class BatchAnalysis(Base):
+    """One uploaded batch workbook and its row-level analysis lifecycle."""
+
+    __tablename__ = "batch_analyses"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    student_id = Column(
+        String(36), ForeignKey("students.id"), nullable=True, index=True
+    )
+    original_filename = Column(String(255), nullable=False)
+    stored_filename = Column(String(255), nullable=False)
+    storage_key = Column(String(255), nullable=False)
+    result_storage_key = Column(String(255), nullable=True)
+    mime_type = Column(
+        String(100),
+        nullable=False,
+        default="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    file_size = Column(Integer, nullable=False)
+    sha256 = Column(String(64), nullable=False, index=True)
+    status = Column(
+        String(50), nullable=False, default=BatchStatus.PROCESSING.value, index=True
+    )
+    total_rows = Column(Integer, nullable=False, default=0)
+    processed_rows = Column(Integer, nullable=False, default=0)
+    verdict_counts = Column(
+        Text, nullable=True
+    )  # JSON: {"LEGIT": n, "FAKE": n, "ANOMALY": n}
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    processing_started_at = Column(DateTime(timezone=True), nullable=True)
+    processing_completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id])

@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine, Base
 from app.seed import seed_data
-from app.api import auth, submissions, issuers, audit, stats
+from app.api import auth, submissions, issuers, audit, stats, batch
 
 
 @asynccontextmanager
@@ -23,7 +23,7 @@ app = FastAPI(
     title="CertificateGuard API",
     description="Evidence-Based Certificate Verification & Anomaly Detection Platform",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # CORS Middleware
@@ -38,6 +38,7 @@ app.add_middleware(
 # Include Routers
 app.include_router(auth.router)
 app.include_router(submissions.router)
+app.include_router(batch.router)
 app.include_router(issuers.router)
 app.include_router(audit.router)
 app.include_router(stats.router)
@@ -53,5 +54,5 @@ def root():
     return {
         "message": "Welcome to CertificateGuard API",
         "docs": "/docs",
-        "philosophy": "AI and automation provide evidence. The issuer and teacher provide trust."
+        "philosophy": "AI and automation provide evidence. The issuer and teacher provide trust.",
     }

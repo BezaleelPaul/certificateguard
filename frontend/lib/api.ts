@@ -1,4 +1,4 @@
-import { User, Submission, Issuer, AuditLog, PlatformStats, TeacherDecision, UserRole } from '@/types';
+import { User, Submission, Issuer, AuditLog, PlatformStats, TeacherDecision, UserRole, BatchAnalysis } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -134,6 +134,85 @@ class ApiService {
 
   getFileUrl(submissionId: string): string {
     return `${API_BASE}/api/submissions/${submissionId}/file`;
+  }
+
+  async getBatches(): Promise<BatchAnalysis[]> {
+    const res = await fetch(`${API_BASE}/api/batch`, {
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error('Failed to fetch batch analyses');
+    return res.json();
+  }
+
+  async getBatch(id: string): Promise<BatchAnalysis> {
+    const res = await fetch(`${API_BASE}/api/batch/${id}`, {
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error('Failed to fetch batch analysis');
+    return res.json();
+  }
+
+  async uploadBatch(file: File): Promise<BatchAnalysis> {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const res = await fetch(`${API_BASE}/api/batch`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
+      const detail = err.detail;
+      if (detail && typeof detail === 'object' && Array.isArray(detail.errors)) {
+        throw new Error(`${detail.message}: ${detail.errors.join(' | ')}`);
+      }
+      throw new Error(typeof detail === 'string' ? detail : 'Upload failed');
+    }
+    return res.json();
+  }
+
+  async processBatch(id: string): Promise<BatchAnalysis> {
+    const res = await fetch(`${API_BASE}/api/batch/${id}/process`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Analysis failed' }));
+      throw new Error(err.detail || 'Analysis failed');
+    }
+    return res.json();
+  }
+
+  async downloadBatchResult(batch: BatchAnalysis): Promise<void> {
+    await this.downloadAuthenticatedFile(
+      `${API_BASE}/api/batch/${batch.id}/result`,
+      `analysed_${batch.original_filename || 'workbook.xlsx'}`
+    );
+  }
+
+  async downloadBatchTemplate(): Promise<void> {
+    await this.downloadAuthenticatedFile(
+      `${API_BASE}/api/batch/template`,
+      'certificateguard_batch_template.xlsx'
+    );
+  }
+
+  private async downloadAuthenticatedFile(url: string, filename: string): Promise<void> {
+    const res = await fetch(url, { headers: this.getAuthHeaders() });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Download failed' }));
+      throw new Error(err.detail || 'Download failed');
+    }
+    const blob = await res.blob();
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(href);
   }
 }
 

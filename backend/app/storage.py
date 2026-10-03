@@ -9,7 +9,9 @@ from app.config import settings
 
 class StorageProvider(ABC):
     @abstractmethod
-    async def save_submission(self, file_content: bytes, extension: str) -> tuple[str, str, str]:
+    async def save_submission(
+        self, file_content: bytes, extension: str
+    ) -> tuple[str, str, str]:
         """Saves file into storage. Returns (storage_key, stored_filename, full_path)."""
         pass
 
@@ -33,6 +35,11 @@ class StorageProvider(ABC):
         """Saves verification report to storage."""
         pass
 
+    @abstractmethod
+    async def save_analysis_result(self, batch_id: str, content: bytes) -> str:
+        """Saves an annotated batch-analysis workbook. Returns storage key."""
+        pass
+
 
 class LocalStorageProvider(StorageProvider):
     def __init__(self, base_path: Optional[str] = None):
@@ -43,10 +50,17 @@ class LocalStorageProvider(StorageProvider):
         self.quarantine_dir = self.base_path / "quarantine"
 
         # Ensure all required storage directories exist
-        for d in [self.submissions_dir, self.processed_dir, self.reports_dir, self.quarantine_dir]:
+        for d in [
+            self.submissions_dir,
+            self.processed_dir,
+            self.reports_dir,
+            self.quarantine_dir,
+        ]:
             d.mkdir(parents=True, exist_ok=True)
 
-    async def save_submission(self, file_content: bytes, extension: str) -> tuple[str, str, str]:
+    async def save_submission(
+        self, file_content: bytes, extension: str
+    ) -> tuple[str, str, str]:
         # Generate internal UUID to never trust original filename
         internal_id = str(uuid.uuid4())
         clean_ext = extension.lower().strip()
@@ -65,7 +79,9 @@ class LocalStorageProvider(StorageProvider):
     async def get_file_bytes(self, storage_key: str) -> bytes:
         full_path = self.base_path / storage_key
         if not full_path.exists():
-            raise FileNotFoundError(f"Storage object '{storage_key}' not found at {full_path}")
+            raise FileNotFoundError(
+                f"Storage object '{storage_key}' not found at {full_path}"
+            )
         with open(full_path, "rb") as f:
             return f.read()
 
@@ -98,6 +114,13 @@ class LocalStorageProvider(StorageProvider):
         with open(target_path, "w", encoding="utf-8") as f:
             f.write(report_content)
         return f"reports/{report_filename}"
+
+    async def save_analysis_result(self, batch_id: str, content: bytes) -> str:
+        result_filename = f"analysis_{batch_id}.xlsx"
+        target_path = self.processed_dir / result_filename
+        with open(target_path, "wb") as f:
+            f.write(content)
+        return f"processed/{result_filename}"
 
 
 # Global storage instance

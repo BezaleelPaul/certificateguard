@@ -1,0 +1,46 @@
+# CertificateGuard - Render Blueprint
+# Launch: Render Dashboard -> New + -> Blueprint -> select this repository.
+#
+# Services created:
+#   1. certificateguard-backend      (FastAPI, Docker from backend/Dockerfile)
+#   2. certificateguard-mock-issuer  (demo issuer portal + resolver)
+#
+# Database: leave DATABASE_URL unset to use the built-in ephemeral SQLite
+# (fine for demos - data resets when the free instance restarts). For a
+# persistent database, create a free Neon/Supabase Postgres and paste its
+# connection string below (sync: false -> set in dashboard after launch).
+
+services:
+  - type: web
+    name: certificateguard-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: STORAGE_PATH
+        value: /app/storage
+      - key: CORS_ORIGINS
+        value: https://certificateguard.vercel.app
+      - key: MOCK_ISSUER_URL
+        value: https://certificateguard-mock-issuer.onrender.com
+      - key: DATABASE_URL
+        sync: false # optional: paste postgresql+asyncpg://... (Neon/Supabase)
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+  - type: web
+    name: certificateguard-mock-issuer
+    runtime: docker
+    dockerfilePath: ./mock-issuer/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"

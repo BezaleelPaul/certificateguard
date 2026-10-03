@@ -1,7 +1,15 @@
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-from app.models import UserRole, SubmissionStatus, IssuerVerificationType, IssuerVerificationStatus, AnomalySeverity, DuplicateMatchType, TeacherReviewDecision
+from app.models import (
+    UserRole,
+    SubmissionStatus,
+    IssuerVerificationType,
+    IssuerVerificationStatus,
+    AnomalySeverity,
+    DuplicateMatchType,
+    TeacherReviewDecision,
+)
 
 
 # Authentication Schemas
@@ -231,3 +239,21 @@ class PlatformStatsResponse(BaseModel):
     unverifiable: int
     total_issuers: int
     active_students: int
+
+
+# Batch Analysis Schemas
+class BatchAnalysisResponse(BaseModel):
+    id: str
+    user_id: str
+    original_filename: str
+    file_size: int
+    sha256: str
+    status: str
+    total_rows: int
+    processed_rows: int
+    verdict_counts: Optional[Dict[str, int]] = None
+    error_message: Optional[str] = None
+    result_ready: bool = False
+    created_at: datetime
+    processing_started_at: Optional[datetime] = None
+    processing_completed_at: Optional[datetime] = None

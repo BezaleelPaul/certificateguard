@@ -158,3 +158,24 @@ export interface PlatformStats {
   total_issuers: number;
   active_students: number;
 }
+
+export type BatchVerdict = 'LEGIT' | 'FAKE' | 'ANOMALY';
+
+export type BatchStatus = 'PROCESSING' | 'COMPLETED' | 'FAILED';
+
+export interface BatchAnalysis {
+  id: string;
+  user_id: string;
+  original_filename: string;
+  file_size: number;
+  sha256: string;
+  status: BatchStatus;
+  total_rows: number;
+  processed_rows: number;
+  verdict_counts?: Record<BatchVerdict, number> | null;
+  error_message?: string | null;
+  result_ready: boolean;
+  created_at: string;
+  processing_started_at?: string | null;
+  processing_completed_at?: string | null;
+}

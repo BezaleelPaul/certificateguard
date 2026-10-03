@@ -101,6 +101,14 @@ export default function RootLayout({
                 >
                   Submit Certificate
                 </Link>
+                <Link
+                  href="/batch"
+                  className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                    pathname === '/batch' ? 'bg-slate-800 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                  }`}
+                >
+                  Batch Analysis
+                </Link>
                 {!isStudent && (
                   <>
                     <Link
