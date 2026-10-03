@@ -206,6 +206,12 @@ docker compose up --build
 
 The platform is split across two free tiers: the **Next.js frontend on Vercel** and the **FastAPI backend + mock issuer on Render** (Docker, defined in `render.yaml`).
 
+### One-click backend deploy
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/BezaleelPaul/certificateguard)
+
+The button opens Render's Blueprint flow with both services (`certificateguard-backend`, `certificateguard-mock-issuer`) pre-configured from `render.yaml` — review and click **Apply**.
+
 ### 1. Backend on Render (~2 minutes)
 
 1. Push this repository to GitHub.
