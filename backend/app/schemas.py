@@ -242,6 +242,10 @@ class PlatformStatsResponse(BaseModel):
 
 
 # Batch Analysis Schemas
+class BatchFromUrlRequest(BaseModel):
+    url: str = Field(..., min_length=10, max_length=2048)
+
+
 class BatchAnalysisResponse(BaseModel):
     id: str
     user_id: str

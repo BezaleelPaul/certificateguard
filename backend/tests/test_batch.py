@@ -386,3 +386,220 @@ async def test_result_not_ready_returns_conflict(student_auth_headers):
             f"/api/batch/{batch_id}/result", headers=student_auth_headers
         )
         assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Google Sheets intake
+# ---------------------------------------------------------------------------
+
+
+def make_google_sheet_bytes(with_verdict_column: bool = False):
+    """A messy, title-row-first sheet in the shape of a real class spreadsheet."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["CERTIFICATE VERIFICATION REPORT - 2024"])
+    headers = [
+        "SL. NO.",
+        "NAME OF THE STUDENT",
+        "",
+        "REGISTRATION  NUMBER",
+        "LINKS OF CERTIFICATES",
+    ]
+    if with_verdict_column:
+        headers.append("VERDICT")
+    ws.append(headers)
+    rows = [
+        [1, "Rahul Kumar", "", "CERT-1001", "https://example.edu/verify?id=CERT-1001"],
+        [2, "Fraud Person", "", "CERT-1003", "https://example.edu/verify?id=CERT-1003"],
+    ]
+    for row in rows:
+        if with_verdict_column:
+            row = row + ["LEGIT"]
+        ws.append(row)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+class TestExtractSheetId:
+    def test_accepts_common_share_links(self):
+        from app.batch.google_sheets import extract_sheet_id
+
+        sheet_id = "1l_CoBQ6BnSTDADpCBX6ibcaAIapiFyTW"
+        for url in (
+            f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit?usp=sharing",
+            f"https://docs.google.com/spreadsheets/d/{sheet_id}/view",
+            f"http://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx",
+            f"https://sheets.google.com/spreadsheets/d/{sheet_id}/edit#gid=0",
+            f"  https://docs.google.com/spreadsheets/d/{sheet_id}/edit  ",
+        ):
+            assert extract_sheet_id(url) == sheet_id
+
+    def test_rejects_non_google_hosts(self):
+        from app.batch.google_sheets import GoogleSheetError, extract_sheet_id
+
+        sheet_id = "1l_CoBQ6BnSTDADpCBX6ibcaAIapiFyTW"
+        for url in (
+            f"https://docs.google.com.evil.com/spreadsheets/d/{sheet_id}/edit",
+            f"https://evil.com/spreadsheets/d/{sheet_id}/edit",
+            f"https://notsheets.example.org/spreadsheets/d/{sheet_id}/edit",
+        ):
+            with pytest.raises(GoogleSheetError, match="docs.google.com"):
+                extract_sheet_id(url)
+
+    def test_rejects_bad_scheme_and_missing_id(self):
+        from app.batch.google_sheets import GoogleSheetError, extract_sheet_id
+
+        with pytest.raises(GoogleSheetError, match="https://"):
+            extract_sheet_id("javascript:alert(1)")
+        with pytest.raises(GoogleSheetError, match="https://"):
+            extract_sheet_id("ftp://docs.google.com/spreadsheets/d/abcdef123456/edit")
+        with pytest.raises(GoogleSheetError, match="spreadsheet ID"):
+            extract_sheet_id("https://docs.google.com/spreadsheets/d/abc/edit")
+        with pytest.raises(GoogleSheetError, match="spreadsheet ID"):
+            extract_sheet_id("https://docs.google.com/spreadsheets/u/0/")
+        with pytest.raises(GoogleSheetError, match="https://"):
+            extract_sheet_id("")
+
+
+class TestAdaptWorkbook:
+    def test_contract_workbook_passes_through(self):
+        from app.batch.google_sheets import adapt_workbook
+
+        content = make_workbook(VALID_ROWS)
+        adapted, mode = adapt_workbook(content)
+        assert mode == "contract"
+        assert adapted == content
+
+    def test_maps_messy_headers_and_skips_title_row(self):
+        from app.batch.google_sheets import adapt_workbook
+
+        adapted, mode = adapt_workbook(make_google_sheet_bytes())
+        assert mode == "mapped"
+
+        rows = parse_workbook(adapted)  # adapted output must satisfy the contract
+        assert len(rows) == 2
+        assert rows[0].recipient_name == "Rahul Kumar"
+        assert rows[0].certificate_id == "CERT-1001"
+        assert rows[0].certificate_url == "https://example.edu/verify?id=CERT-1001"
+        assert rows[1].recipient_name == "Fraud Person"
+        # Unmappable columns (SL. NO., blank header) are simply dropped.
+
+    def test_source_verdict_column_never_reaches_output_zone(self):
+        """Even if the remote sheet ships its own verdicts, the output zone stays empty."""
+        from app.batch.google_sheets import adapt_workbook
+
+        adapted, mode = adapt_workbook(
+            make_google_sheet_bytes(with_verdict_column=True)
+        )
+        assert mode == "mapped"
+
+        wb = load_workbook(io.BytesIO(adapted))
+        ws = wb[SHEET_NAME]
+        verdict_col = len(INPUT_COLUMNS) + 1
+        assert [ws.cell(row=r, column=verdict_col).value for r in (2, 3)] == [
+            None,
+            None,
+        ]
+
+    def test_rejects_unmappable_sheet(self):
+        from app.batch.google_sheets import adapt_workbook
+
+        unmappable = make_workbook(
+            [["a", "b"], ["1", "2"]],
+            sheet_name="Sheet1",
+            headers=["foo", "bar"],
+        )
+        with pytest.raises(WorkbookFormatError, match="usable header row"):
+            adapt_workbook(unmappable)
+
+    def test_rejects_garbage_bytes(self):
+        from app.batch.google_sheets import adapt_workbook
+
+        with pytest.raises(WorkbookFormatError, match="could not be opened"):
+            adapt_workbook(b"not a workbook at all")
+
+
+@pytest.mark.asyncio
+async def test_from_url_rejects_invalid_urls_without_fetching(student_auth_headers):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        anon = await client.post(
+            "/api/batch/from-url", json={"url": "https://docs.google.com/x"}
+        )
+        assert anon.status_code == 401
+
+        for url in (
+            "https://evil.com/spreadsheets/d/1l_CoBQ6BnSTDADpCBX6ibcaAIapiFyTW/edit",
+            "https://docs.google.com.evil.com/spreadsheets/d/1l_CoBQ6BnSTDADpCBX6ibcaAIapiFyTW/edit",
+            "javascript:alert(1)",
+            "https://docs.google.com/spreadsheets/d/abc/edit",
+        ):
+            resp = await client.post(
+                "/api/batch/from-url", json={"url": url}, headers=student_auth_headers
+            )
+            assert resp.status_code == 400, url
+            assert isinstance(resp.json()["detail"], str)
+
+
+@pytest.mark.asyncio
+async def test_from_url_end_to_end(student_auth_headers, monkeypatch):
+    """URL -> fetch (mocked) -> adapt -> ingest -> analyse -> verdicts."""
+
+    async def fake_fetch(sheet_id):
+        assert sheet_id == "1l_CoBQ6BnSTDADpCBX6ibcaAIapiFyTW"
+        return make_google_sheet_bytes()
+
+    monkeypatch.setattr("app.api.batch.fetch_sheet_export", fake_fetch)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/batch/from-url",
+            json={
+                "url": "https://docs.google.com/spreadsheets/d/1l_CoBQ6BnSTDADpCBX6ibcaAIapiFyTW/edit?usp=sharing"
+            },
+            headers=student_auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        batch = resp.json()
+        assert batch["total_rows"] == 2
+        assert batch["original_filename"].startswith("gsheet_")
+
+        process = await client.post(
+            f"/api/batch/{batch['id']}/process", headers=student_auth_headers
+        )
+        assert process.status_code == 200, process.text
+        done = process.json()
+        assert done["status"] == "COMPLETED"
+        counts = done["verdict_counts"]
+        assert counts[VERDICT_LEGIT] == 1  # CERT-1001 confirmed by issuer registry
+        assert counts[VERDICT_FAKE] == 1  # CERT-1003 declared non-existent
+        assert counts.get(VERDICT_ANOMALY, 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_from_url_reports_adaptation_errors(student_auth_headers, monkeypatch):
+    async def fake_fetch(sheet_id):
+        return make_workbook(
+            [["a", "b"], ["1", "2"]], sheet_name="Sheet1", headers=["foo", "bar"]
+        )
+
+    monkeypatch.setattr("app.api.batch.fetch_sheet_export", fake_fetch)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/batch/from-url",
+            json={
+                "url": "https://docs.google.com/spreadsheets/d/1l_CoBQ6BnSTDADpCBX6ibcaAIapiFyTW/edit"
+            },
+            headers=student_auth_headers,
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["message"] == "Workbook does not follow the required format"
+        assert any("usable header row" in e for e in detail["errors"])

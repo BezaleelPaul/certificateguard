@@ -15,6 +15,12 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import database as app_db
+from app.batch.google_sheets import (
+    GoogleSheetError,
+    adapt_workbook,
+    extract_sheet_id,
+    fetch_sheet_export,
+)
 from app.batch.service import batch_analysis_service
 from app.batch.template import (
     WorkbookFormatError,
@@ -24,7 +30,7 @@ from app.batch.template import (
 )
 from app.database import get_db
 from app.models import BatchAnalysis, BatchStatus, User, UserRole
-from app.schemas import BatchAnalysisResponse
+from app.schemas import BatchAnalysisResponse, BatchFromUrlRequest
 from app.security.auth import get_current_user
 from app.security.validation import (
     FileValidationError,
@@ -82,6 +88,63 @@ def _assert_accessible(batch: BatchAnalysis, current_user: User):
         )
 
 
+def _format_error(exc: WorkbookFormatError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "message": "Workbook does not follow the required format",
+            "expected": expected_format_description(),
+            "errors": exc.errors,
+        },
+    )
+
+
+async def _ingest_workbook(
+    background_tasks: BackgroundTasks,
+    db: AsyncSession,
+    current_user: User,
+    content: bytes,
+    filename: str,
+) -> BatchAnalysisResponse:
+    """Shared upload path: security checks, contract parse, persist, queue."""
+    try:
+        validate_workbook_upload(filename, content, WORKBOOK_MEDIA_TYPE)
+    except FileValidationError as ve:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Security/format rejection: {ve.message} [{ve.code}]",
+        )
+
+    try:
+        rows = parse_workbook(content)
+    except WorkbookFormatError as exc:
+        raise _format_error(exc)
+
+    sha256_hash = compute_sha256(content)
+    storage_key, stored_filename, _ = await storage_provider.save_submission(
+        content, ".xlsx"
+    )
+
+    batch = BatchAnalysis(
+        user_id=current_user.id,
+        student_id=current_user.student_id,
+        original_filename=filename,
+        stored_filename=stored_filename,
+        storage_key=storage_key,
+        mime_type=WORKBOOK_MEDIA_TYPE,
+        file_size=len(content),
+        sha256=sha256_hash,
+        status=BatchStatus.PROCESSING.value,
+        total_rows=len(rows),
+    )
+    db.add(batch)
+    await db.commit()
+    await db.refresh(batch)
+
+    background_tasks.add_task(run_batch_background, batch.id)
+    return _to_response(batch)
+
+
 @router.get("/template")
 async def download_template(current_user: User = Depends(get_current_user)):
     """
@@ -111,52 +174,50 @@ async def upload_batch(
     Queues row-level analysis and returns the batch record.
     """
     content = await file.read()
+    return await _ingest_workbook(
+        background_tasks,
+        db,
+        current_user,
+        content,
+        file.filename or "workbook.xlsx",
+    )
 
-    # 1. Security validation (size, extension, ZIP magic bytes, container integrity)
-    try:
-        validate_workbook_upload(file.filename or "", content, file.content_type)
-    except FileValidationError as ve:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Security/format rejection: {ve.message} [{ve.code}]",
-        )
 
-    # 2. Strict format-contract validation before anything is persisted
+@router.post("/from-url", response_model=BatchAnalysisResponse)
+async def upload_batch_from_url(
+    background_tasks: BackgroundTasks,
+    payload: BatchFromUrlRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Imports a shared Google Sheet by URL: validates the link against an
+    allow-list, downloads the export server-side, heuristically maps its
+    columns onto the format contract (output zone always generated empty),
+    then runs the same ingestion pipeline as a direct upload.
+    """
     try:
-        rows = parse_workbook(content)
+        sheet_id = extract_sheet_id(payload.url)
+    except GoogleSheetError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    try:
+        exported = await fetch_sheet_export(sheet_id)
+    except GoogleSheetError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    try:
+        content, _mode = adapt_workbook(exported)
     except WorkbookFormatError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "message": "Workbook does not follow the required format",
-                "expected": expected_format_description(),
-                "errors": exc.errors,
-            },
-        )
+        raise _format_error(exc)
 
-    sha256_hash = compute_sha256(content)
-    storage_key, stored_filename, _ = await storage_provider.save_submission(
-        content, ".xlsx"
+    return await _ingest_workbook(
+        background_tasks,
+        db,
+        current_user,
+        content,
+        f"gsheet_{sheet_id[:12]}.xlsx",
     )
-
-    batch = BatchAnalysis(
-        user_id=current_user.id,
-        student_id=current_user.student_id,
-        original_filename=file.filename,
-        stored_filename=stored_filename,
-        storage_key=storage_key,
-        mime_type=WORKBOOK_MEDIA_TYPE,
-        file_size=len(content),
-        sha256=sha256_hash,
-        status=BatchStatus.PROCESSING.value,
-        total_rows=len(rows),
-    )
-    db.add(batch)
-    await db.commit()
-    await db.refresh(batch)
-
-    background_tasks.add_task(run_batch_background, batch.id)
-    return _to_response(batch)
 
 
 @router.get("", response_model=List[BatchAnalysisResponse])

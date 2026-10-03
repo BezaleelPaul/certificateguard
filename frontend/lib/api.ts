@@ -185,6 +185,26 @@ class ApiService {
     return res.json();
   }
 
+  async uploadBatchFromGoogleSheet(url: string): Promise<BatchAnalysis> {
+    const res = await fetch(`${API_BASE}/api/batch/from-url`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.getAuthHeaders(),
+      },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Google Sheets import failed' }));
+      const detail = err.detail;
+      if (detail && typeof detail === 'object' && Array.isArray(detail.errors)) {
+        throw new Error(`${detail.message}: ${detail.errors.join(' | ')}`);
+      }
+      throw new Error(typeof detail === 'string' ? detail : 'Google Sheets import failed');
+    }
+    return res.json();
+  }
+
   async processBatch(id: string): Promise<BatchAnalysis> {
     const res = await fetch(`${API_BASE}/api/batch/${id}/process`, {
       method: 'POST',
