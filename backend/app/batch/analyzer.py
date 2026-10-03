@@ -125,6 +125,33 @@ async def _resolve_issuer_record(
     certificate_id: str,
     certificate_url: str,
 ) -> Dict[str, Any]:
+    """Safe entry point: a failing issuer check must never crash the batch.
+
+    Any unexpected adapter error degrades to UNAVAILABLE, which the rules
+    map to an honest ANOMALY with the failure surfaced in the analysis text.
+    """
+    try:
+        return await _resolve_issuer_record_impl(
+            matched_issuer, certificate_id, certificate_url
+        )
+    except Exception as exc:
+        logger.exception("Issuer verification crashed for id %r", certificate_id)
+        return {
+            "status": "UNAVAILABLE",
+            "certificate_id": None,
+            "recipient": None,
+            "course": None,
+            "evidence": None,
+            "method": "NONE",
+            "note": f"Verification step failed: {type(exc).__name__}: {exc}",
+        }
+
+
+async def _resolve_issuer_record_impl(
+    matched_issuer: Optional[Issuer],
+    certificate_id: str,
+    certificate_url: str,
+) -> Dict[str, Any]:
     """Queries the authoritative issuer through the same adapter chain as the pipeline."""
     result: Dict[str, Any] = {
         "status": "UNAVAILABLE",

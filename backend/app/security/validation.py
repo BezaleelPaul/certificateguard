@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 from typing import Tuple, Optional
 from pypdf import PdfReader
 from PIL import Image
@@ -224,3 +225,29 @@ def validate_workbook_upload(
         )
 
     return True, "xlsx", clean_ext
+
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+_URL_SCHEME = re.compile(r"https?://", re.IGNORECASE)
+
+
+def normalize_url_text(value: Optional[str]) -> str:
+    """Repairs URL text coming from spreadsheet cells.
+
+    Cells often carry line breaks (wrapped links, pasted URLs). Raw control
+    characters make HTTP clients reject the whole URL. A line that continues
+    a wrapped link is glued back on; a new link or a prose line ends the URL.
+    """
+    lines = [
+        cleaned
+        for line in str(value or "").splitlines()
+        if (cleaned := _CONTROL_CHARS.sub("", line).strip())
+    ]
+    if not lines:
+        return ""
+    merged = lines[0]
+    for line in lines[1:]:
+        if _URL_SCHEME.match(line) or " " in line:
+            break
+        merged += line
+    return merged

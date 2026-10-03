@@ -21,6 +21,7 @@ from app.batch.template import (
     VERDICT_ANOMALY,
     VERDICT_FAKE,
     VERDICT_LEGIT,
+    parse_workbook,
 )
 from app.main import app
 from app.models import Issuer, IssuerVerificationStatus
@@ -207,6 +208,66 @@ async def test_single_word_title_never_becomes_a_recipient(monkeypatch):
     assert result.recipient_returned is None
 
 
+@pytest.mark.asyncio
+async def test_newline_inside_url_is_repaired_before_fetch(monkeypatch):
+    seen = {}
+
+    async def fake_afetch(url: str) -> httpx.Response:
+        seen["url"] = url
+        return _resp(url, 200, MGL_HTML)
+
+    monkeypatch.setattr(web_fetch_issuer_adapter, "_afetch", fake_afetch)
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="MGL-001",
+        verification_url="http://localhost:8001/certificates/\nmgl001",
+        metadata=LOCAL_META,
+    )
+    assert result.verification_status == IssuerVerificationStatus.VALID
+    assert seen["url"] == "http://localhost:8001/certificates/mgl001"
+
+
+@pytest.mark.asyncio
+async def test_two_links_in_one_cell_use_the_first(monkeypatch):
+    seen = {}
+
+    async def fake_afetch(url: str) -> httpx.Response:
+        seen["url"] = url
+        return _resp(url, 200, MGL_HTML)
+
+    monkeypatch.setattr(web_fetch_issuer_adapter, "_afetch", fake_afetch)
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="MGL-001",
+        verification_url="http://localhost:8001/one\nhttp://localhost:8001/two",
+        metadata=LOCAL_META,
+    )
+    assert result.verification_status == IssuerVerificationStatus.VALID
+    assert seen["url"] == "http://localhost:8001/one"
+
+
+@pytest.mark.asyncio
+async def test_non_http_url_text_is_unavailable_without_fetching(monkeypatch):
+    _install_fetch_boom(monkeypatch)
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="MGL-001",
+        verification_url="see the portal for details",
+        metadata=LOCAL_META,
+    )
+    assert result.verification_status == IssuerVerificationStatus.UNAVAILABLE
+    assert "not a fetchable http(s) link" in (result.error_message or "")
+
+
+def test_parse_workbook_repairs_wrapped_url_cells():
+    rows = [row for row in MGL_ROWS]
+    rows[0] = list(rows[0])
+    rows[0][4] = "https://www.mygreatlearning.com/certificates/\nmgl001"
+    parsed = parse_workbook(_make_workbook(rows))
+    assert "\n" not in parsed[0].certificate_url
+    assert (
+        parsed[0].certificate_url
+        == "https://www.mygreatlearning.com/certificates/mgl001"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Analyzer adapter-chain gating
 # ---------------------------------------------------------------------------
@@ -316,6 +377,28 @@ async def test_demo_issuer_still_resolves_through_mock_registry(monkeypatch):
     assert result["recipient"] == "Rahul Kumar"
 
 
+@pytest.mark.asyncio
+async def test_adapter_crash_degrades_to_unavailable(monkeypatch):
+    async def raising(**kwargs):
+        raise RuntimeError("adapter exploded")
+
+    monkeypatch.setattr(web_fetch_issuer_adapter, "verify", raising)
+
+    issuer = Issuer(
+        name="MyGreatLearning",
+        official_domain="mygreatlearning.com",
+        verification_type="WEB",
+        active=True,
+    )
+    result = await _resolve_issuer_record(
+        issuer, "MGL-001", "https://www.mygreatlearning.com/x"
+    )
+    assert result["status"] == "UNAVAILABLE"
+    assert "Verification step failed: RuntimeError: adapter exploded" == (
+        result["note"] or ""
+    )
+
+
 # ---------------------------------------------------------------------------
 # End-to-end: real issuer rows through the batch API
 # ---------------------------------------------------------------------------
@@ -365,19 +448,29 @@ def _make_workbook(rows):
     return buffer.getvalue()
 
 
+async def _ensure_mgl_issuer(db_session):
+    from sqlalchemy import select
+
+    existing = await db_session.execute(
+        select(Issuer).where(Issuer.official_domain == "mygreatlearning.com")
+    )
+    if existing.scalar_one_or_none() is None:
+        db_session.add(
+            Issuer(
+                name="MyGreatLearning",
+                official_domain="mygreatlearning.com",
+                verification_type="WEB",
+                active=True,
+            )
+        )
+        await db_session.commit()
+
+
 @pytest.mark.asyncio
 async def test_real_issuer_rows_produce_mixed_verdicts(
     student_auth_headers, db_session, monkeypatch
 ):
-    db_session.add(
-        Issuer(
-            name="MyGreatLearning",
-            official_domain="mygreatlearning.com",
-            verification_type="WEB",
-            active=True,
-        )
-    )
-    await db_session.commit()
+    await _ensure_mgl_issuer(db_session)
 
     async def fake_web(**kwargs):
         cid = kwargs.get("certificate_id")
@@ -438,3 +531,51 @@ async def test_real_issuer_rows_produce_mixed_verdicts(
         assert verdicts == [VERDICT_LEGIT, VERDICT_FAKE, VERDICT_ANOMALY]
         # The UNAVAILABLE row must surface why the issuer check failed.
         assert "Issuer check:" in (ws.cell(row=4, column=analysis_col).value or "")
+
+
+@pytest.mark.asyncio
+async def test_crashing_issuer_check_still_completes_batch(
+    student_auth_headers, db_session, monkeypatch
+):
+    """Regression: a wrapped URL plus an adapter bug must not fail the batch."""
+    await _ensure_mgl_issuer(db_session)
+
+    async def raising(**kwargs):
+        raise RuntimeError("adapter exploded")
+
+    monkeypatch.setattr(web_fetch_issuer_adapter, "verify", raising)
+    monkeypatch.setattr(mock_issuer_adapter, "verify", _mock_boom)
+
+    rows = [list(row) for row in MGL_ROWS[:1]]
+    rows[0][0] = "Test Person"
+    rows[0][1] = "MGL-901"
+    rows[0][4] = "https://www.mygreatlearning.com/certificates/\nmgl901"
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        upload = await client.post(
+            "/api/batch",
+            files={"file": ("crash.xlsx", _make_workbook(rows), WORKBOOK_MIME)},
+            headers=student_auth_headers,
+        )
+        assert upload.status_code == 200, upload.text
+        batch_id = upload.json()["id"]
+
+        process = await client.post(
+            f"/api/batch/{batch_id}/process", headers=student_auth_headers
+        )
+        assert process.status_code == 200, process.text
+        done = process.json()
+        assert done["status"] == "COMPLETED"
+        counts = done["verdict_counts"]
+        assert counts[VERDICT_ANOMALY] == 1
+        assert counts[VERDICT_LEGIT] == 0
+        assert counts[VERDICT_FAKE] == 0
+
+        result = await client.get(
+            f"/api/batch/{batch_id}/result", headers=student_auth_headers
+        )
+        wb = load_workbook(io.BytesIO(result.content))
+        ws = wb[SHEET_NAME]
+        analysis = ws.cell(row=2, column=len(INPUT_COLUMNS) + 4).value or ""
+        assert "Verification step failed: RuntimeError" in analysis

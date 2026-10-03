@@ -32,6 +32,8 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Protection
 from openpyxl.utils import get_column_letter
 
+from app.security.validation import normalize_url_text
+
 SHEET_NAME = "Certificates"
 GUIDE_SHEET_NAME = "FORMAT_GUIDE"
 
@@ -298,7 +300,7 @@ def parse_workbook(content: bytes) -> List[SheetRow]:
                     certificate_id=inputs[1],
                     course=inputs[2],
                     issuer=inputs[3],
-                    certificate_url=inputs[4],
+                    certificate_url=normalize_url_text(inputs[4]),
                     issue_date=inputs[5],
                     expiry_date=inputs[6],
                 )

@@ -38,6 +38,7 @@ import httpx
 
 from app.models import IssuerVerificationStatus
 from app.security.ssrf import validate_url_ssrf
+from app.security.validation import normalize_url_text
 from app.verification.adapter import (
     AdapterVerificationResult,
     IssuerVerificationAdapter,
@@ -209,41 +210,49 @@ class WebFetchIssuerAdapter(IssuerVerificationAdapter):
         verification_url: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> AdapterVerificationResult:
-        if not verification_url:
+        # Repair control characters (embedded newlines from spreadsheet cells)
+        # before any client sees the URL: urlsplit silently strips them, but
+        # httpx rejects the raw string and would crash the whole analysis.
+        url = normalize_url_text(verification_url)
+        if not url:
             return AdapterVerificationResult(
                 verification_status=IssuerVerificationStatus.UNAVAILABLE,
                 certificate_id_returned=certificate_id or None,
                 error_message="Row has no public certificate URL to verify against",
             )
+        if not url.lower().startswith(("http://", "https://")):
+            return AdapterVerificationResult(
+                verification_status=IssuerVerificationStatus.UNAVAILABLE,
+                certificate_id_returned=certificate_id or None,
+                error_message="Row certificate URL is not a fetchable http(s) link",
+            )
 
         config = metadata or {}
         allow_local = config.get("allow_localhost", False)
-        ssrf_check = validate_url_ssrf(verification_url, allow_localhost=allow_local)
+        ssrf_check = validate_url_ssrf(url, allow_localhost=allow_local)
         if not ssrf_check.is_safe:
             if ssrf_check.is_dns_failure:
                 return AdapterVerificationResult(
                     verification_status=IssuerVerificationStatus.UNAVAILABLE,
                     certificate_id_returned=certificate_id or None,
-                    verification_url=verification_url,
+                    verification_url=url,
                     error_message=f"Issuer website unresolvable: {ssrf_check.reason}",
                 )
             return AdapterVerificationResult(
                 verification_status=IssuerVerificationStatus.INVALID,
                 certificate_id_returned=certificate_id or None,
-                verification_url=verification_url,
+                verification_url=url,
                 error_message=f"SSRF violation: {ssrf_check.reason}",
             )
 
         try:
-            response = await self._afetch(verification_url)
-        except httpx.HTTPError as exc:
-            logger.info(
-                "Web verification fetch failed for %s: %s", verification_url, exc
-            )
+            response = await self._afetch(url)
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError, UnicodeError) as exc:
+            logger.info("Web verification fetch failed for %s: %s", url, exc)
             return AdapterVerificationResult(
                 verification_status=IssuerVerificationStatus.UNAVAILABLE,
                 certificate_id_returned=certificate_id or None,
-                verification_url=verification_url,
+                verification_url=url,
                 error_message=f"Issuer site unreachable ({type(exc).__name__})",
             )
 
@@ -294,7 +303,7 @@ class WebFetchIssuerAdapter(IssuerVerificationAdapter):
         body = response.text[:MAX_BODY_BYTES]
 
         # 1. Signed redirect token (Simplilearn-style landing URLs).
-        payload = _payload_from_url(final_url) or _payload_from_url(verification_url)
+        payload = _payload_from_url(final_url) or _payload_from_url(url)
         recipient = _payload_recipient(payload) if payload else None
         source = "redirect-token-payload" if recipient else None
 
