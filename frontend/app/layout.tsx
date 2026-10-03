@@ -35,8 +35,20 @@ export default function RootLayout({
         if (stored) {
           setCurrentUser(stored);
         } else {
-          const { user } = await api.login('TEACHER');
-          setCurrentUser(user);
+          // Backend may be cold-starting; retry login a few times before giving up.
+          let lastErr: unknown = null;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            try {
+              const { user } = await api.login('TEACHER');
+              setCurrentUser(user);
+              lastErr = null;
+              break;
+            } catch (err) {
+              lastErr = err;
+              await new Promise((r) => setTimeout(r, 3000));
+            }
+          }
+          if (lastErr) throw lastErr;
         }
       } catch (err) {
         console.error('Failed to init auth:', err);
@@ -157,7 +169,16 @@ export default function RootLayout({
         </div>
 
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          {children}
+          {loading ? (
+            <div className="flex flex-col items-center justify-center min-h-[50vh]">
+              <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+              <p className="mt-4 text-sm text-slate-500 font-medium">
+                Connecting to CertificateGuard...
+              </p>
+            </div>
+          ) : (
+            children
+          )}
         </main>
       </body>
     </html>
