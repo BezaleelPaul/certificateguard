@@ -63,6 +63,14 @@ export default function AuditLogsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 text-xs font-mono">
+            {logs.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-6 py-10 text-center text-slate-400 font-sans text-sm">
+                  No audit events recorded yet — events appear here after certificate
+                  uploads, verifications, reviews and batch analyses.
+                </td>
+              </tr>
+            )}
             {logs.map((log) => (
               <tr key={log.id} className="hover:bg-slate-50">
                 <td className="px-6 py-3.5 text-slate-500">

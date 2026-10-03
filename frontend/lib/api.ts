@@ -30,6 +30,19 @@ class ApiService {
     return userStr ? JSON.parse(userStr) : null;
   }
 
+  async validateSession(): Promise<User | null> {
+    if (!localStorage.getItem('token')) return null;
+    const res = await fetch(`${API_BASE}/api/auth/me`, {
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) return null;
+    const user = await res.json();
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('user', JSON.stringify(user));
+    }
+    return user;
+  }
+
   async getSubmissions(): Promise<Submission[]> {
     const res = await fetch(`${API_BASE}/api/submissions`, {
       headers: this.getAuthHeaders(),

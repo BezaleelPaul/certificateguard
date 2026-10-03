@@ -33,23 +33,28 @@ export default function RootLayout({
       try {
         const stored = api.getCurrentUser();
         if (stored) {
-          setCurrentUser(stored);
-        } else {
-          // Backend may be cold-starting; retry login a few times before giving up.
-          let lastErr: unknown = null;
-          for (let attempt = 0; attempt < 4; attempt++) {
-            try {
-              const { user } = await api.login('TEACHER');
-              setCurrentUser(user);
-              lastErr = null;
-              break;
-            } catch (err) {
-              lastErr = err;
-              await new Promise((r) => setTimeout(r, 3000));
-            }
+          // Backend restarts (e.g. Render redeploy) invalidate old tokens —
+          // verify the session and fall back to a fresh login if it's dead.
+          const fresh = await api.validateSession();
+          if (fresh) {
+            setCurrentUser(fresh);
+            return;
           }
-          if (lastErr) throw lastErr;
         }
+        // Backend may be cold-starting; retry login a few times before giving up.
+        let lastErr: unknown = null;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          try {
+            const { user } = await api.login('TEACHER');
+            setCurrentUser(user);
+            lastErr = null;
+            break;
+          } catch (err) {
+            lastErr = err;
+            await new Promise((r) => setTimeout(r, 3000));
+          }
+        }
+        if (lastErr) throw lastErr;
       } catch (err) {
         console.error('Failed to init auth:', err);
       } finally {
