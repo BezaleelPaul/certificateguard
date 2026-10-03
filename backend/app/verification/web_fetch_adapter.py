@@ -14,6 +14,9 @@ from the served document:
 Outcome contract (drives the verdict rules):
   404/410 or an explicit "certificate not found" page -> INVALID
       (the issuer's own server says this certificate does not exist)
+  issuer-configured existence check (public object storage):
+      object present -> VALID, object missing -> INVALID
+      (mirrors the issuer's own "does this code exist" verifier)
   401/403/429/5xx, timeouts, anti-bot, JS-only shells  -> UNAVAILABLE
       (the authority could not be consulted - never guess)
   200 with an extractable recipient                    -> VALID
@@ -268,6 +271,108 @@ class WebFetchIssuerAdapter(IssuerVerificationAdapter):
         ) as client:
             return await client.get(url)
 
+    async def _verify_existence(
+        self,
+        certificate_id: str,
+        url: str,
+        cfg: Dict[str, Any],
+        allow_local: bool,
+    ) -> AdapterVerificationResult:
+        """Issuer-configured existence check against public object storage.
+
+        Some issuers publish certificates as static objects and expose no
+        HTML verification page: their own site validates a code simply by
+        checking whether the object exists. A missing object is then the
+        issuer's explicit "certificate not found" answer.
+        """
+        segment = urlparse(url).path.rstrip("/").split("/")[-1]
+        prefix = str(cfg.get("strip_prefix") or "")
+        code = (
+            segment[len(prefix) :] if prefix and segment.startswith(prefix) else segment
+        )
+        if not code:
+            return AdapterVerificationResult(
+                verification_status=IssuerVerificationStatus.UNAVAILABLE,
+                certificate_id_returned=certificate_id or None,
+                verification_url=url,
+                error_message="Existence check configured but URL carries no certificate code",
+            )
+        try:
+            check_url = str(cfg["url_template"]).format(code=code)
+        except (KeyError, IndexError, ValueError):
+            return AdapterVerificationResult(
+                verification_status=IssuerVerificationStatus.UNAVAILABLE,
+                certificate_id_returned=certificate_id or None,
+                verification_url=url,
+                error_message="Issuer existence check template is misconfigured",
+            )
+
+        ssrf_check = validate_url_ssrf(check_url, allow_localhost=allow_local)
+        if not ssrf_check.is_safe:
+            return AdapterVerificationResult(
+                verification_status=IssuerVerificationStatus.UNAVAILABLE,
+                certificate_id_returned=certificate_id or None,
+                verification_url=url,
+                error_message=f"Issuer existence check blocked by SSRF guard: {ssrf_check.reason}",
+            )
+
+        try:
+            response = await self._afetch(check_url)
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError, UnicodeError) as exc:
+            logger.info("Existence check fetch failed for %s: %s", check_url, exc)
+            return AdapterVerificationResult(
+                verification_status=IssuerVerificationStatus.UNAVAILABLE,
+                certificate_id_returned=certificate_id or None,
+                verification_url=url,
+                error_message=f"Issuer existence check unreachable ({type(exc).__name__})",
+            )
+
+        status_code = response.status_code
+        evidence = json.dumps(
+            {"check_url": check_url, "http_status": status_code, "code": code}
+        )
+        if status_code == 200:
+            return AdapterVerificationResult(
+                verification_status=IssuerVerificationStatus.VALID,
+                certificate_id_returned=certificate_id or None,
+                status_returned="VALID",
+                verification_url=check_url,
+                raw_evidence=evidence,
+                error_message=(
+                    "Issuer storage confirms this certificate exists "
+                    "(recipient name not machine-readable from the image)"
+                ),
+            )
+        if status_code in (404, 410):
+            return AdapterVerificationResult(
+                verification_status=IssuerVerificationStatus.INVALID,
+                certificate_id_returned=certificate_id or None,
+                status_returned=f"HTTP {status_code}",
+                verification_url=check_url,
+                raw_evidence=evidence,
+                error_message="Issuer reports certificate not found (existence check)",
+            )
+        if status_code in (401, 403, 429) or status_code >= 500:
+            return AdapterVerificationResult(
+                verification_status=IssuerVerificationStatus.UNAVAILABLE,
+                certificate_id_returned=certificate_id or None,
+                status_returned=f"HTTP {status_code}",
+                verification_url=check_url,
+                raw_evidence=evidence,
+                error_message=(
+                    f"Issuer existence check returned HTTP {status_code} "
+                    "(access restricted or outage)"
+                ),
+            )
+        return AdapterVerificationResult(
+            verification_status=IssuerVerificationStatus.UNAVAILABLE,
+            certificate_id_returned=certificate_id or None,
+            status_returned=f"HTTP {status_code}",
+            verification_url=check_url,
+            raw_evidence=evidence,
+            error_message=f"Unexpected HTTP status {status_code} from issuer existence check",
+        )
+
     async def verify(
         self,
         certificate_id: str,
@@ -307,6 +412,14 @@ class WebFetchIssuerAdapter(IssuerVerificationAdapter):
                 certificate_id_returned=certificate_id or None,
                 verification_url=url,
                 error_message=f"SSRF violation: {ssrf_check.reason}",
+            )
+
+        # Issuer-configured existence check: certificates published as static
+        # objects are validated the same way the issuer's own site does it.
+        existence_cfg = config.get("existence_check")
+        if isinstance(existence_cfg, dict) and existence_cfg.get("url_template"):
+            return await self._verify_existence(
+                certificate_id, url, existence_cfg, allow_local
             )
 
         try:

@@ -672,3 +672,129 @@ async def test_crashing_issuer_check_still_completes_batch(
         ws = wb[SHEET_NAME]
         analysis = ws.cell(row=2, column=len(INPUT_COLUMNS) + 4).value or ""
         assert "Verification step failed: RuntimeError" in analysis
+
+
+# ---------------------------------------------------------------------------
+# Issuer-configured existence check (Cursa-style object storage)
+# ---------------------------------------------------------------------------
+
+CURSA_META = {
+    "existence_check": {
+        "url_template": "http://localhost:8001/cert_{code}.png",
+        "strip_prefix": "cert",
+    },
+    "allow_localhost": True,
+}
+CURSA_LIKE_URL = (
+    "http://localhost:8001/en/my-certificate/cert18c8acd5281a4a5b5a4f312cd760a25b"
+)
+
+
+@pytest.mark.asyncio
+async def test_existence_check_object_present_is_valid(monkeypatch):
+    seen = {}
+
+    def responder(url):
+        seen["url"] = url
+        return _resp(url, 200, "", content_type="image/png")
+
+    _install_fetch(monkeypatch, responder)
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="25BBTCS013",
+        verification_url=CURSA_LIKE_URL,
+        metadata=CURSA_META,
+    )
+    assert result.verification_status == IssuerVerificationStatus.VALID
+    assert result.recipient_returned is None
+    assert seen["url"].endswith("cert_18c8acd5281a4a5b5a4f312cd760a25b.png")
+    assert "not machine-readable" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_existence_check_object_missing_is_invalid(monkeypatch):
+    _install_fetch(monkeypatch, lambda url: _resp(url, 404, ""))
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="25BBTCS013",
+        verification_url=CURSA_LIKE_URL,
+        metadata=CURSA_META,
+    )
+    assert result.verification_status == IssuerVerificationStatus.INVALID
+    assert "not found (existence check)" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_existence_check_forbidden_is_unavailable_not_invalid(monkeypatch):
+    _install_fetch(monkeypatch, lambda url: _resp(url, 403, ""))
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="25BBTCS013",
+        verification_url=CURSA_LIKE_URL,
+        metadata=CURSA_META,
+    )
+    assert result.verification_status == IssuerVerificationStatus.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_existence_check_without_strip_prefix_uses_full_segment(monkeypatch):
+    meta = {
+        "existence_check": {"url_template": "http://localhost:8001/{code}.png"},
+        "allow_localhost": True,
+    }
+    seen = {}
+
+    def responder(url):
+        seen["url"] = url
+        return _resp(url, 404, "")
+
+    _install_fetch(monkeypatch, responder)
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="X",
+        verification_url=CURSA_LIKE_URL,
+        metadata=meta,
+    )
+    assert result.verification_status == IssuerVerificationStatus.INVALID
+    assert "cert18c8acd5281a4a5b5a4f312cd760a25b.png" in seen["url"]
+    assert "cert_cert" not in seen["url"]
+
+
+@pytest.mark.asyncio
+async def test_existence_check_url_without_code_is_unavailable(monkeypatch):
+    _install_fetch_boom(monkeypatch)
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="X",
+        verification_url="http://localhost:8001/",
+        metadata=CURSA_META,
+    )
+    assert result.verification_status == IssuerVerificationStatus.UNAVAILABLE
+    assert "no certificate code" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_existence_check_misconfigured_template_is_unavailable(monkeypatch):
+    _install_fetch_boom(monkeypatch)
+    meta = {
+        "existence_check": {"url_template": "http://localhost:8001/{other}.png"},
+        "allow_localhost": True,
+    }
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="X",
+        verification_url=CURSA_LIKE_URL,
+        metadata=meta,
+    )
+    assert result.verification_status == IssuerVerificationStatus.UNAVAILABLE
+    assert "misconfigured" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_existence_check_ssrf_target_is_unavailable(monkeypatch):
+    _install_fetch_boom(monkeypatch)
+    meta = {
+        "existence_check": {"url_template": "http://169.254.169.254/{code}.png"},
+        "allow_localhost": True,
+    }
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="X",
+        verification_url=CURSA_LIKE_URL,
+        metadata=meta,
+    )
+    assert result.verification_status == IssuerVerificationStatus.UNAVAILABLE
+    assert "SSRF" in (result.error_message or "")

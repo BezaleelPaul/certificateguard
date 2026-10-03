@@ -1,9 +1,20 @@
 import asyncio
+import json
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import AsyncSessionLocal, Base, engine
 from app.models import User, Student, Issuer, UserRole, IssuerVerificationType
 from app.security.auth import get_password_hash
+
+# Cursa validates a certificate code by checking whether the rendered
+# certificate image exists in its public bucket - the same check its own
+# site runs. Mirrors that verifier so missing objects become INVALID.
+CURSA_EXISTENCE_CONFIG = {
+    "existence_check": {
+        "url_template": "https://cursacertificates.s3.amazonaws.com/cert_{code}.png",
+        "strip_prefix": "cert",
+    }
+}
 
 
 async def seed_data():
@@ -11,6 +22,15 @@ async def seed_data():
         await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as session:
+        # Databases seeded by older versions lack newer issuer configs.
+        cfg_res = await session.execute(
+            select(Issuer).where(Issuer.official_domain == "cursa.app")
+        )
+        cursa_row = cfg_res.scalar_one_or_none()
+        if cursa_row and not cursa_row.configuration_json:
+            cursa_row.configuration_json = json.dumps(CURSA_EXISTENCE_CONFIG)
+            await session.commit()
+
         # Check if users already seeded
         res = await session.execute(
             select(User).where(User.email == "student@example.com")
@@ -138,6 +158,7 @@ async def seed_data():
             official_domain="cursa.app",
             verification_type=IssuerVerificationType.WEB.value,
             active=True,
+            configuration_json=json.dumps(CURSA_EXISTENCE_CONFIG),
         )
         session.add(issuer_8)
 
