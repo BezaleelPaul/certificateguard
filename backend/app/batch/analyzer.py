@@ -162,50 +162,58 @@ async def _resolve_issuer_record_impl(
         "method": "NONE",
         "note": None,
     }
-    if not matched_issuer or not certificate_id:
+    if not matched_issuer:
         return result
 
     result["method"] = matched_issuer.verification_type
     url = (certificate_url or "").strip() or None
     config = _issuer_config(matched_issuer)
 
+    if matched_issuer.verification_type == "WEB" and not _uses_mock_registry(
+        matched_issuer, config
+    ):
+        # Real issuer: consult its public verification page over HTTP even
+        # when the sheet's certificate ID cell is empty - the URL alone
+        # identifies the credential and the recipient is read from the page.
+        web_res = await web_fetch_issuer_adapter.verify(
+            certificate_id=certificate_id,
+            verification_url=url,
+            metadata=config,
+        )
+        return {
+            "status": web_res.verification_status.value,
+            "certificate_id": web_res.certificate_id_returned,
+            "recipient": web_res.recipient_returned,
+            "course": web_res.course_returned,
+            "evidence": web_res.raw_evidence,
+            "method": "WEB",
+            "note": web_res.error_message,
+        }
+
+    if not certificate_id:
+        # Mock/API/MANUAL registries are keyed by certificate ID.
+        return result
+
     if matched_issuer.verification_type == "WEB":
-        if _uses_mock_registry(matched_issuer, config):
-            target_url = url
-            if not target_url and matched_issuer.verification_url:
-                target_url = f"{matched_issuer.verification_url}?id={certificate_id}"
-            playwright_res = await playwright_issuer_adapter.verify(
-                certificate_id=certificate_id,
-                verification_url=target_url,
-                metadata=config,
-            )
-            if playwright_res.verification_status.value != "UNAVAILABLE":
-                return {
-                    "status": playwright_res.verification_status.value,
-                    "certificate_id": playwright_res.certificate_id_returned,
-                    "recipient": playwright_res.recipient_returned,
-                    "course": playwright_res.course_returned,
-                    "evidence": playwright_res.raw_evidence,
-                    "method": "WEB",
-                    "note": playwright_res.error_message,
-                }
-            # Playwright unavailable -> fall back to the authoritative mock resolver.
-        else:
-            # Real issuer: consult its public verification page over HTTP.
-            web_res = await web_fetch_issuer_adapter.verify(
-                certificate_id=certificate_id,
-                verification_url=url,
-                metadata=config,
-            )
+        target_url = url
+        if not target_url and matched_issuer.verification_url:
+            target_url = f"{matched_issuer.verification_url}?id={certificate_id}"
+        playwright_res = await playwright_issuer_adapter.verify(
+            certificate_id=certificate_id,
+            verification_url=target_url,
+            metadata=config,
+        )
+        if playwright_res.verification_status.value != "UNAVAILABLE":
             return {
-                "status": web_res.verification_status.value,
-                "certificate_id": web_res.certificate_id_returned,
-                "recipient": web_res.recipient_returned,
-                "course": web_res.course_returned,
-                "evidence": web_res.raw_evidence,
+                "status": playwright_res.verification_status.value,
+                "certificate_id": playwright_res.certificate_id_returned,
+                "recipient": playwright_res.recipient_returned,
+                "course": playwright_res.course_returned,
+                "evidence": playwright_res.raw_evidence,
                 "method": "WEB",
-                "note": web_res.error_message,
+                "note": playwright_res.error_message,
             }
+        # Playwright unavailable -> fall back to the authoritative mock resolver.
 
     mock_res = await mock_issuer_adapter.verify(
         certificate_id=certificate_id,

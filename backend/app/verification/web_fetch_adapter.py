@@ -53,17 +53,71 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 CertificateGuard/1.0"
 )
 
-# Recipient phrases ordered from most to least specific.
+
+def _plausible_person_name(name: str) -> bool:
+    # Real-world certificate holders in these sheets always have >= 2
+    # tokens; single words like "free" from "certificate for free" are
+    # false positives we must not accept.
+    return len(name.split()) >= 2
+
+
+# Single-token names are accepted only for the anchored og:title pattern,
+# where the surrounding phrase is rigid ("NAME has successfully completed").
+_NAME_STOPWORDS = frozenset(
+    {
+        "free",
+        "test",
+        "demo",
+        "course",
+        "certificate",
+        "example",
+        "user",
+        "student",
+        "sample",
+    }
+)
+
+
+def _plausible_completed_name(name: str) -> bool:
+    tokens = name.split()
+    if len(tokens) >= 2:
+        return True
+    if not tokens:
+        return False
+    token = tokens[0]
+    return len(token) >= 3 and token.isalpha() and token.lower() not in _NAME_STOPWORDS
+
+
+# Recipient phrases ordered from most to least specific. Each pattern pairs
+# with the guard that decides whether its capture looks like a person name.
 _RECIPIENT_PATTERNS = [
-    re.compile(r"verifies that ([^|<]{3,80}?) has successfully completed", re.I),
-    re.compile(r"certificate for ([^|<]{3,80}?)(?:\.|$)", re.I),
-    re.compile(r"awarded to ([^|<]{3,80}?)(?:\.|$)", re.I),
-    re.compile(r"presented to ([^|<]{3,80}?)(?:\.|$)", re.I),
-    re.compile(r"congratulations[,]? ([^|<]{3,80}?)(?:\.|!|$)", re.I),
+    (
+        re.compile(r"verifies that ([^|<]{3,80}?) has successfully completed", re.I),
+        _plausible_person_name,
+    ),
+    # og:title style: "NAME has successfully completed the online course ..."
+    # (anchored, so a single-token name at the start is acceptable; identity
+    # comparison still guards the final verdict).
+    (
+        re.compile(r"^(.{2,80}?)\s+has successfully completed", re.I),
+        _plausible_completed_name,
+    ),
+    (
+        re.compile(r"certificate for ([^|<]{3,80}?)(?:\.|$)", re.I),
+        _plausible_person_name,
+    ),
+    (re.compile(r"awarded to ([^|<]{3,80}?)(?:\.|$)", re.I), _plausible_person_name),
+    (re.compile(r"presented to ([^|<]{3,80}?)(?:\.|$)", re.I), _plausible_person_name),
+    (
+        re.compile(r"congratulations[,]? ([^|<]{3,80}?)(?:\.|!|$)", re.I),
+        _plausible_person_name,
+    ),
 ]
 
 _COURSE_PATTERNS = [
-    re.compile(r"completed (?:the )?(?:free )?course ([^|<.;]{3,90}?)(?:\.|$)", re.I),
+    re.compile(
+        r"completed (?:the )?(?:online |free )?course ([^|<.;]{3,90}?)(?:\.|$)", re.I
+    ),
     re.compile(r"^(.+?) course completion certificate", re.I),
 ]
 
@@ -97,13 +151,6 @@ def _collapse(text: str) -> str:
     return re.sub(r"\s+", " ", html_lib.unescape(text or "")).strip()
 
 
-def _plausible_person_name(name: str) -> bool:
-    # Real-world certificate holders in these sheets always have >= 2
-    # tokens; single words like "free" from "certificate for free" are
-    # false positives we must not accept.
-    return len(name.split()) >= 2
-
-
 def _visible_text(body: str) -> str:
     stripped = re.sub(
         r"<(script|style|noscript)[^>]*>.*?</\1>", " ", body, flags=re.I | re.S
@@ -113,13 +160,30 @@ def _visible_text(body: str) -> str:
 
 
 def _extract_recipient(text: str) -> Optional[str]:
-    for pattern in _RECIPIENT_PATTERNS:
+    for pattern, guard in _RECIPIENT_PATTERNS:
         match = pattern.search(text)
         if match:
             candidate = _collapse(match.group(1))
-            if _plausible_person_name(candidate):
+            if guard(candidate):
                 return candidate
     return None
+
+
+def _og_meta(body: str, prop: str) -> str:
+    """Reads an Open Graph meta tag (property/content in either order)."""
+    pattern = re.compile(
+        r"<meta[^>]*(?:property=[\"']og:"
+        + prop
+        + r"[\"'][^>]*content=[\"']([^\"']+)[\"']"
+        + r"|content=[\"']([^\"']+)[\"'][^>]*property=[\"']og:"
+        + prop
+        + r"[\"'])",
+        re.I,
+    )
+    match = pattern.search(body)
+    if not match:
+        return ""
+    return _collapse(match.group(1) or match.group(2))
 
 
 def _extract_course(text: str) -> Optional[str]:
@@ -307,7 +371,18 @@ class WebFetchIssuerAdapter(IssuerVerificationAdapter):
         recipient = _payload_recipient(payload) if payload else None
         source = "redirect-token-payload" if recipient else None
 
-        # 2. Page metadata: JSON-LD, <title>, meta description.
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
+        title_text = _collapse(title_match.group(1)) if title_match else ""
+        desc_match = re.search(
+            r'<meta\s+name=["\']description["\']\s+content=["\']([^"\']+)["\']',
+            body,
+            re.I,
+        )
+        desc_text = _collapse(desc_match.group(1)) if desc_match else ""
+        og_title = _og_meta(body, "title")
+        og_desc = _og_meta(body, "description")
+
+        # 2. Page metadata: JSON-LD, Open Graph, meta description, <title>.
         if not recipient:
             for candidate in _jsonld_candidates(body):
                 recipient = candidate
@@ -315,18 +390,15 @@ class WebFetchIssuerAdapter(IssuerVerificationAdapter):
                 break
 
         if not recipient:
-            title_match = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
-            title = _collapse(title_match.group(1)) if title_match else ""
-            desc_match = re.search(
-                r'<meta\s+name=["\']description["\']\s+content=["\']([^"\']+)["\']',
-                body,
-                re.I,
-            )
-            desc = _collapse(desc_match.group(1)) if desc_match else ""
-            for source_text in (desc, title):
+            for source_text, source_name in (
+                (og_title, "og:title"),
+                (og_desc, "og:description"),
+                (desc_text, "meta-description"),
+                (title_text, "title"),
+            ):
                 recipient = _extract_recipient(source_text)
                 if recipient:
-                    source = "meta-description" if source_text is desc else "title"
+                    source = source_name
                     break
 
         if recipient:
@@ -338,11 +410,7 @@ class WebFetchIssuerAdapter(IssuerVerificationAdapter):
                         course = _collapse(value)
                         break
             if not course:
-                title_match = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
-                for text in (
-                    _collapse(title_match.group(1)) if title_match else "",
-                    body[:4000],
-                ):
+                for text in (og_title, og_desc, title_text, body[:4000]):
                     course = _extract_course(text)
                     if course:
                         break

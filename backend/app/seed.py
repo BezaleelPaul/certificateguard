@@ -125,6 +125,22 @@ async def seed_data():
         )
         session.add(issuer_6)
 
+        issuer_7 = Issuer(
+            name="Udemy",
+            official_domain="udemy.com",
+            verification_type=IssuerVerificationType.WEB.value,
+            active=True,
+        )
+        session.add(issuer_7)
+
+        issuer_8 = Issuer(
+            name="Cursa",
+            official_domain="cursa.app",
+            verification_type=IssuerVerificationType.WEB.value,
+            active=True,
+        )
+        session.add(issuer_8)
+
         await session.commit()
         print("Successfully seeded development data:")
         print("  - student@example.com (Password: password123)")

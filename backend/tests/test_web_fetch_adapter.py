@@ -208,6 +208,54 @@ async def test_single_word_title_never_becomes_a_recipient(monkeypatch):
     assert result.recipient_returned is None
 
 
+SKILLUP_OG_HTML = """<html><head>
+<meta property="og:title" content="BHAGIRATHI  has successfully completed the online course Fundamentals of Software Development. Upgrade your skills with 100+ free courses">
+<title>Skillup Certificate | Simplilearn</title>
+</head><body></body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_extracts_recipient_and_course_from_og_title(monkeypatch):
+    _install_fetch(monkeypatch, lambda url: _resp(url, 200, SKILLUP_OG_HTML))
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="25BBTCS040",
+        verification_url="http://localhost:8001/landing",
+        metadata=LOCAL_META,
+    )
+    assert result.verification_status == IssuerVerificationStatus.VALID
+    assert result.recipient_returned == "BHAGIRATHI"
+    assert result.course_returned == "Fundamentals of Software Development"
+
+
+@pytest.mark.asyncio
+async def test_og_meta_content_before_property_order(monkeypatch):
+    body = (
+        '<html><head><meta content="Anish Jaiswal has successfully completed '
+        'the online course Programming Fundamentals." property="og:title">'
+        "</head><body></body></html>"
+    )
+    _install_fetch(monkeypatch, lambda url: _resp(url, 200, body))
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="25BBTCS055",
+        verification_url="http://localhost:8001/landing",
+        metadata=LOCAL_META,
+    )
+    assert result.verification_status == IssuerVerificationStatus.VALID
+    assert result.recipient_returned == "Anish Jaiswal"
+
+
+@pytest.mark.asyncio
+async def test_verification_works_without_certificate_id(monkeypatch):
+    _install_fetch(monkeypatch, lambda url: _resp(url, 200, MGL_HTML))
+    result = await web_fetch_issuer_adapter.verify(
+        certificate_id="",
+        verification_url=LOCAL_URL,
+        metadata=LOCAL_META,
+    )
+    assert result.verification_status == IssuerVerificationStatus.VALID
+    assert result.recipient_returned == "A Chirag Kevin Bernard"
+
+
 @pytest.mark.asyncio
 async def test_newline_inside_url_is_repaired_before_fetch(monkeypatch):
     seen = {}
@@ -397,6 +445,51 @@ async def test_adapter_crash_degrades_to_unavailable(monkeypatch):
     assert "Verification step failed: RuntimeError: adapter exploded" == (
         result["note"] or ""
     )
+
+
+@pytest.mark.asyncio
+async def test_real_issuer_fetches_even_without_certificate_id(monkeypatch):
+    monkeypatch.setattr(mock_issuer_adapter, "verify", _mock_boom)
+    monkeypatch.setattr(playwright_issuer_adapter, "verify", _playwright_boom)
+
+    async def fake_web(**kwargs):
+        return _web_result(
+            IssuerVerificationStatus.VALID,
+            recipient_returned="Anish Jaiswal",
+            course_returned="Programming Fundamentals",
+        )
+
+    monkeypatch.setattr(web_fetch_issuer_adapter, "verify", fake_web)
+
+    issuer = Issuer(
+        name="Simplilearn SkillUp",
+        official_domain="app.link",
+        verification_type="WEB",
+        active=True,
+    )
+    result = await _resolve_issuer_record(issuer, "", "https://simpli.app.link/abc")
+    assert result["status"] == "VALID"
+    assert result["method"] == "WEB"
+    assert result["recipient"] == "Anish Jaiswal"
+
+
+@pytest.mark.asyncio
+async def test_registry_issuers_still_require_certificate_id(monkeypatch):
+    async def web_boom(*args, **kwargs):
+        raise AssertionError("web fetch queried for a demo issuer")
+
+    monkeypatch.setattr(web_fetch_issuer_adapter, "verify", web_boom)
+
+    issuer = Issuer(
+        name="Example University",
+        official_domain="example.edu",
+        verification_type="WEB",
+        verification_url="http://localhost:8001/verify",
+        active=True,
+    )
+    result = await _resolve_issuer_record(issuer, "", "https://example.edu/verify")
+    assert result["status"] == "UNAVAILABLE"
+    assert result["method"] == "WEB"
 
 
 # ---------------------------------------------------------------------------
